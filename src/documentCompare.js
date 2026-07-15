@@ -715,8 +715,11 @@ export function createDocumentCompare(root) {
               apiKey,
               textEvidence: buildPdfTextEvidence(textFindings),
             }));
-            const geminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
-            geminiPageBoxes = mapCropBoxesToPage(geminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
+            const rawGeminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
+            const rawGeminiPageBoxes = mapCropBoxesToPage(rawGeminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
+            geminiPageBoxes = textAvailable
+              ? groundGeminiBoxesToPdfText(gemini, textFindings, rightCanvas, rawGeminiPageBoxes)
+              : rawGeminiPageBoxes;
           } catch (error) {
             gemini = { error: cleanGeminiText(error.message) || "Gemini review failed." };
           }
@@ -1455,6 +1458,78 @@ function geminiReviewBoxes(review, width, height) {
       geminiChangeIndex: index,
     };
   }).filter(Boolean);
+}
+
+function groundGeminiBoxesToPdfText(review, textFindings, pageCanvas, fallbackBoxes) {
+  if (!Array.isArray(review?.changes) || !textFindings.length) return fallbackBoxes;
+  const fallbackByChangeIndex = new Map(fallbackBoxes.map((box) => [box.geminiChangeIndex, box]));
+  const usedFindingIndexes = new Set();
+  const boxes = [];
+
+  review.changes.forEach((change, changeIndex) => {
+    const findingIndex = findGeminiTextFindingMatch(change, textFindings, usedFindingIndexes);
+    if (findingIndex >= 0) {
+      const finding = textFindings[findingIndex];
+      usedFindingIndexes.add(findingIndex);
+      boxes.push(normalizedBoxToCanvas(finding.comparisonBox, pageCanvas, {
+        label: change.description || finding.label || "Gemini พบจุดต่าง",
+        markerKind: "gemini",
+        markerDescription: change.description || finding.description || "Gemini พบจุดต่างในบริเวณนี้",
+        geminiChangeIndex: changeIndex,
+        markerSource: "pdf-text",
+      }));
+      return;
+    }
+
+    const fallback = fallbackByChangeIndex.get(changeIndex);
+    if (fallback) boxes.push(fallback);
+  });
+
+  return boxes;
+}
+
+function findGeminiTextFindingMatch(change, textFindings, usedFindingIndexes) {
+  let best = { index: -1, score: 0 };
+  textFindings.forEach((finding, index) => {
+    if (usedFindingIndexes.has(index) || !finding?.comparisonBox) return;
+    const score = geminiTextFindingScore(change, finding);
+    if (score > best.score) best = { index, score };
+  });
+  return best.score >= 0.7 ? best.index : -1;
+}
+
+function geminiTextFindingScore(change, finding) {
+  const reference = normalizeGeminiMatchText(change?.referenceText);
+  const comparison = normalizeGeminiMatchText(change?.comparisonText);
+  const findingReference = normalizeGeminiMatchText(finding?.referenceText);
+  const findingComparison = normalizeGeminiMatchText(finding?.comparisonText);
+  const referenceScore = geminiTextMatchScore(reference, findingReference);
+  const comparisonScore = geminiTextMatchScore(comparison, findingComparison);
+
+  if (reference && comparison) {
+    if (referenceScore < 0.58 || comparisonScore < 0.58) return 0;
+    return (referenceScore * 0.45) + (comparisonScore * 0.55);
+  }
+  if (comparison) return comparisonScore >= 0.86 ? comparisonScore : 0;
+  if (reference) return referenceScore >= 0.86 ? referenceScore : 0;
+  return 0;
+}
+
+function normalizeGeminiMatchText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s\p{P}\p{S}_]+/gu, "");
+}
+
+function geminiTextMatchScore(first, second) {
+  if (!first || !second) return 0;
+  if (first === second) return 1;
+  if (/^\d+$/.test(first) && /^\d+$/.test(second)) return 0;
+  const shorter = first.length <= second.length ? first : second;
+  const longer = first.length > second.length ? first : second;
+  if (shorter.length < 4 || !longer.includes(shorter)) return 0;
+  return 0.72 + Math.min(0.26, (shorter.length / Math.max(1, longer.length)) * 0.26);
 }
 
 function normalizePair(leftCanvas, rightCanvas) {

@@ -12,9 +12,9 @@ export async function reviewDocumentDifference({ leftCanvas, rightCanvas, page, 
     contents: [{
       role: "user",
       parts: [
-        { text: `Reference document, page ${page}.` },
+        { text: `Reference selected comparison area, page ${page}.` },
         leftImage,
-        { text: `Revised document, page ${page}. Compare it with the reference. Ignore rendering noise, anti-aliasing, and small scan alignment shifts. Identify only meaningful changes such as inserted, deleted, altered, or moved text, numbers, clauses, signatures, stamps, or drawings. Return JSON only in this shape: {"summary":"short Thai summary","changes":[{"location":"where on the page","description":"what changed","confidence":0.0,"box":{"x":0,"y":0,"width":0,"height":0}}]}. box is optional. When supplied, x, y, width, and height are the changed region's top-left x/y and width/height normalized from 0 to 1000 against the REVISED document image. Include a box only when its location is clear enough to circle. When there is no meaningful change, return an empty changes array.` },
+        { text: `Revised selected comparison area, page ${page}. The two selected areas can come from document templates with different layouts. Compare the same business content rather than their placement or styling: product or item codes, descriptions, quantities, units, prices, totals, dates, names, terms, signatures, stamps, clauses, and drawings. Ignore logos, unrelated headers, table structure, formatting, scan noise, anti-aliasing, and small alignment shifts unless they change the selected business content. Return JSON only in this shape: {"summary":"short Thai summary","changes":[{"location":"where on the revised selected area","description":"what changed","confidence":0.0,"box":{"x":0,"y":0,"width":0,"height":0}}]}. box is optional. When supplied, x, y, width, and height are the changed region's top-left x/y and width/height normalized from 0 to 1000 against the REVISED selected-area image. Give one small box for each specific changed field or line. Never return one box for the entire selected area, a whole table, or several unrelated fields. Omit the box when the exact location is uncertain. When there is no meaningful change, return an empty changes array.` },
         rightImage,
       ],
     }],

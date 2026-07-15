@@ -3,13 +3,13 @@
 LE PDF Scan has two independent document workflows:
 
 - **Priority scan**: sends a PDF to the existing Python/OpenCV service, then sorts pages by the selected marker colour.
-- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, circles visual changes in red, and exports the changed-page images as a ZIP.
+- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select a separate comparison area on each document page, circles visual changes in red, and exports the changed-page images as a ZIP.
 
 The two workflows do not share files, jobs, or detector state. A problem with one cannot change the behaviour of the other.
 
 ## Gemini scan
 
-Document compare can optionally use `gemini-3.1-flash-lite`. When enabled, Gemini reviews each selected page pair, writes a Thai summary, and can add a red circle for a change whose location it returns confidently. Pixel comparison remains active, so the output image is still usable even when Gemini is disabled or unavailable.
+Document compare can optionally use `gemini-3.1-flash-lite`. When enabled, Gemini reviews the selected left/right areas as business content, even when they are in different document layouts, writes a Thai summary, and can add a red circle for a change whose location it returns confidently. Pixel comparison remains available for closely aligned layouts; when the selected areas have different structures, the app suppresses broad false-positive circles and lets Gemini provide the semantic locations instead.
 
 The web form accepts a key for the current browser tab only. For Vercel, set `GEMINI_API_KEY` in Project Environment Variables; the `/api/gemini` function keeps that key on the server. `VITE_GEMINI_API_KEY` is supported only for the same browser-side embedding pattern as LE Pre-drawing and is intentionally left blank in `.env.example` because it becomes public in the built JavaScript.
 

@@ -8,6 +8,9 @@ GlobalWorkerOptions.workerSrc = pdfWorkerSource;
 
 const MAX_RENDER_EDGE = 1800;
 const MIN_COMPONENT_PIXELS = 24;
+const FULL_REGION = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
+const MIN_REGION_SIZE = 0.025;
+const MAX_VISUAL_ALIGNMENT_MISMATCH = 0.065;
 
 export function createDocumentCompare(root) {
   const state = {
@@ -22,6 +25,10 @@ export function createDocumentCompare(root) {
     results: [],
     selectedPage: null,
     previewUrl: null,
+    roiPage: 1,
+    roiRenderToken: 0,
+    roiSelections: new Map(),
+    roiDrag: null,
   };
 
   root.innerHTML = `
@@ -73,6 +80,49 @@ export function createDocumentCompare(root) {
           <button class="download-link" id="compareDownloadZip"><i data-lucide="archive"></i><span>ภาพจุดต่างทั้งหมด</span></button>
         </div>
       </aside>
+
+      <section class="roi-panel" id="compareRoiPanel" hidden>
+        <div class="roi-toolbar">
+          <div>
+            <p class="eyebrow">Compare area</p>
+            <h2>พื้นที่เปรียบเทียบ</h2>
+          </div>
+          <div class="roi-toolbar-actions">
+            <button class="icon-button" id="compareRoiPrevious" type="button" title="หน้าก่อนหน้า"><i data-lucide="chevron-left"></i></button>
+            <span class="roi-page-label" id="compareRoiPageLabel">หน้า -</span>
+            <button class="icon-button" id="compareRoiNext" type="button" title="หน้าถัดไป"><i data-lucide="chevron-right"></i></button>
+            <button class="icon-button" id="compareRoiApplyRange" type="button" title="ใช้กรอบนี้กับทุกหน้าในช่วงที่เลือก"><i data-lucide="copy"></i></button>
+          </div>
+        </div>
+        <div class="roi-editor-grid">
+          <section class="roi-document">
+            <div class="roi-document-header">
+              <span>ต้นฉบับ</span>
+              <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="maximize"></i></button>
+            </div>
+            <div class="roi-stage" id="compareRoiLeftStage">
+              <canvas id="compareRoiLeftCanvas"></canvas>
+              <div class="roi-selection default" id="compareRoiLeftSelection" data-side="left">
+                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle ne" data-handle="ne"></span>
+                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle se" data-handle="se"></span>
+              </div>
+            </div>
+          </section>
+          <section class="roi-document">
+            <div class="roi-document-header">
+              <span>ฉบับเปรียบเทียบ</span>
+              <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="maximize"></i></button>
+            </div>
+            <div class="roi-stage" id="compareRoiRightStage">
+              <canvas id="compareRoiRightCanvas"></canvas>
+              <div class="roi-selection default" id="compareRoiRightSelection" data-side="right">
+                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle ne" data-handle="ne"></span>
+                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle se" data-handle="se"></span>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
 
       <section class="result-panel compare-results">
         <div class="result-header">
@@ -135,6 +185,19 @@ export function createDocumentCompare(root) {
     previewImage: root.querySelector("#comparePreviewImage"),
     previewEmpty: root.querySelector("#comparePreviewEmpty"),
     downloadCurrent: root.querySelector("#compareDownloadCurrent"),
+    roiPanel: root.querySelector("#compareRoiPanel"),
+    roiPageLabel: root.querySelector("#compareRoiPageLabel"),
+    roiPrevious: root.querySelector("#compareRoiPrevious"),
+    roiNext: root.querySelector("#compareRoiNext"),
+    roiApplyRange: root.querySelector("#compareRoiApplyRange"),
+    roiResetLeft: root.querySelector("#compareRoiResetLeft"),
+    roiResetRight: root.querySelector("#compareRoiResetRight"),
+    roiLeftStage: root.querySelector("#compareRoiLeftStage"),
+    roiRightStage: root.querySelector("#compareRoiRightStage"),
+    roiLeftCanvas: root.querySelector("#compareRoiLeftCanvas"),
+    roiRightCanvas: root.querySelector("#compareRoiRightCanvas"),
+    roiLeftSelection: root.querySelector("#compareRoiLeftSelection"),
+    roiRightSelection: root.querySelector("#compareRoiRightSelection"),
   };
 
   restoreGeminiKey();
@@ -144,6 +207,13 @@ export function createDocumentCompare(root) {
   els.resetButton.addEventListener("click", resetComparison);
   els.downloadZip.addEventListener("click", downloadAllDifferences);
   els.downloadCurrent.addEventListener("click", downloadCurrentDifference);
+  els.roiPrevious.addEventListener("click", () => changeRoiPage(-1));
+  els.roiNext.addEventListener("click", () => changeRoiPage(1));
+  els.roiApplyRange.addEventListener("click", applyRoiToRange);
+  els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
+  els.roiResetRight.addEventListener("click", () => resetRoi("right"));
+  bindRoiStage("left");
+  bindRoiStage("right");
   els.resultBody.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-page]");
     if (row) selectResult(Number(row.dataset.page));
@@ -179,6 +249,7 @@ export function createDocumentCompare(root) {
     const fileToken = state.loadTokens[side] + 1;
     state.loadTokens[side] = fileToken;
     state.loadingSides[side] = true;
+    clearRoiState();
     clearResults();
     setFileMeta(side, `${file.name} - ${formatBytes(file.size)} - กำลังอ่าน`);
     setProgressIdle("กำลังอ่านเอกสาร");
@@ -210,6 +281,7 @@ export function createDocumentCompare(root) {
   function updatePageRange() {
     const sharedPages = getSharedPageCount();
     if (!sharedPages) return;
+    state.roiPage = 1;
     els.startPage.value = "1";
     els.endPage.value = String(sharedPages);
     els.startPage.max = String(sharedPages);
@@ -218,6 +290,7 @@ export function createDocumentCompare(root) {
     const rightPages = state.rightSource?.pageCount || 0;
     const suffix = leftPages === rightPages ? `${sharedPages} หน้าพร้อมเปรียบเทียบ` : `เทียบได้ ${sharedPages} หน้า`;
     setProgressIdle(suffix);
+    void renderRoiPreviews();
   }
 
   function resetComparison() {
@@ -233,6 +306,7 @@ export function createDocumentCompare(root) {
     state.loadingSides.left = false;
     state.loadingSides.right = false;
     state.processing = false;
+    clearRoiState();
     els.leftInput.value = "";
     els.rightInput.value = "";
     els.leftMeta.textContent = "PDF หรือภาพ";
@@ -277,8 +351,12 @@ export function createDocumentCompare(root) {
           state.leftSource.renderPage(page),
           state.rightSource.renderPage(page),
         ]);
-        const comparison = comparePageCanvases(leftCanvas, rightCanvas);
-        let boxes = comparison.boxes;
+        const leftRegion = getRoi(page, "left");
+        const rightRegion = getRoi(page, "right");
+        const leftArea = cropCanvas(leftCanvas, leftRegion);
+        const rightArea = cropCanvas(rightCanvas, rightRegion);
+        const comparison = comparePageCanvases(leftArea, rightArea);
+        let cropBoxes = comparison.visualComparable ? comparison.boxes : [];
         let gemini = null;
         if (useGemini) {
           setProgressValue(`Gemini ตรวจทานหน้า ${page}`, completed, total);
@@ -289,22 +367,29 @@ export function createDocumentCompare(root) {
               page,
               apiKey,
             });
-            boxes = mergeBoxes(
-              [...boxes, ...geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height)],
-              Math.max(16, Math.round(comparison.comparisonCanvas.width * 0.013)),
-            );
+            const geminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
+            // Gemini boxes are semantic, so they take precedence for documents whose layouts differ.
+            if (geminiBoxes.length) {
+              cropBoxes = mergeBoxes(
+                geminiBoxes,
+                Math.max(6, Math.round(comparison.comparisonCanvas.width * 0.005)),
+                localBoxLimits(comparison.comparisonCanvas.width, comparison.comparisonCanvas.height),
+              );
+            }
           } catch (error) {
             gemini = { error: error.message || "Gemini review failed." };
           }
         }
+        const boxes = mapCropBoxesToPage(cropBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
         const imageBlob = boxes.length
-          ? await canvasToBlob(drawDifferenceMarkers(comparison.comparisonCanvas, boxes))
+          ? await canvasToBlob(drawDifferenceMarkers(rightCanvas, boxes))
           : null;
         rows.push({
           page,
           boxes,
           imageBlob,
           gemini,
+          visualComparable: comparison.visualComparable,
         });
         state.results = rows;
         renderResults();
@@ -313,7 +398,14 @@ export function createDocumentCompare(root) {
       }
       if (comparisonToken === state.compareToken) {
         const changedPages = rows.filter((row) => row.boxes.length).length;
-        setProgressDone(changedPages ? `พบจุดต่าง ${changedPages} หน้า` : "ไม่พบจุดต่าง");
+        const needsSemanticReview = !useGemini && rows.some((row) => !row.visualComparable);
+        setProgressDone(
+          changedPages
+            ? `พบจุดต่าง ${changedPages} หน้า`
+            : needsSemanticReview
+              ? "โครงสร้างต่างกัน - เปิด Gemini scan"
+              : "ไม่พบจุดต่าง",
+        );
       }
     } catch (error) {
       if (comparisonToken === state.compareToken) setProgressIdle(error.message || "เปรียบเทียบไม่สำเร็จ");
@@ -352,7 +444,7 @@ export function createDocumentCompare(root) {
     els.resultBody.innerHTML = state.results.map((row) => {
       const geminiText = row.gemini?.error
         ? "ตรวจไม่สำเร็จ"
-        : row.gemini?.summary || (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-");
+        : row.gemini?.summary || (!row.visualComparable ? "โครงสร้างต่างกัน" : (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-"));
       return `
         <tr data-page="${row.page}" class="${state.selectedPage === row.page ? "selected" : ""}">
           <td>${row.page}</td>
@@ -460,6 +552,264 @@ export function createDocumentCompare(root) {
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
     state.previewUrl = null;
   }
+
+  function clearRoiState() {
+    state.roiRenderToken += 1;
+    state.roiSelections.clear();
+    state.roiPage = 1;
+    state.roiDrag = null;
+    els.roiPanel.hidden = true;
+    clearPreviewCanvas(els.roiLeftCanvas);
+    clearPreviewCanvas(els.roiRightCanvas);
+  }
+
+  function getRoi(page, side) {
+    const selection = state.roiSelections.get(page)?.[side];
+    return selection || FULL_REGION;
+  }
+
+  function hasCustomRoi(page, side) {
+    return Boolean(state.roiSelections.get(page)?.[side]);
+  }
+
+  function setRoi(page, side, region) {
+    const current = state.roiSelections.get(page) || {};
+    state.roiSelections.set(page, { ...current, [side]: normalizeRoi(region) });
+    renderRoiSelection(side);
+  }
+
+  function resetRoi(side) {
+    const current = state.roiSelections.get(state.roiPage);
+    if (!current?.[side]) return;
+    delete current[side];
+    if (Object.keys(current).length) state.roiSelections.set(state.roiPage, current);
+    else state.roiSelections.delete(state.roiPage);
+    renderRoiSelection(side);
+  }
+
+  function changeRoiPage(offset) {
+    const pageCount = getSharedPageCount();
+    const next = clamp(state.roiPage + offset, 1, pageCount);
+    if (next === state.roiPage) return;
+    state.roiPage = next;
+    void renderRoiPreviews();
+  }
+
+  function applyRoiToRange() {
+    const startPage = Number.parseInt(els.startPage.value, 10);
+    const endPage = Number.parseInt(els.endPage.value, 10);
+    const pageCount = getSharedPageCount();
+    try {
+      validateRange(startPage, endPage, pageCount);
+    } catch (error) {
+      setProgressIdle(error.message);
+      return;
+    }
+    const source = state.roiSelections.get(state.roiPage) || {};
+    for (let page = startPage; page <= endPage; page += 1) {
+      const next = { ...state.roiSelections.get(page) };
+      if (source.left) next.left = { ...source.left };
+      else delete next.left;
+      if (source.right) next.right = { ...source.right };
+      else delete next.right;
+      if (Object.keys(next).length) state.roiSelections.set(page, next);
+      else state.roiSelections.delete(page);
+    }
+    setProgressIdle(`ใช้พื้นที่หน้า ${state.roiPage} กับหน้า ${startPage}-${endPage}`);
+  }
+
+  async function renderRoiPreviews() {
+    if (!state.leftSource || !state.rightSource) return;
+    const pageCount = getSharedPageCount();
+    if (!pageCount) return;
+    state.roiPage = clamp(state.roiPage, 1, pageCount);
+    const token = state.roiRenderToken + 1;
+    state.roiRenderToken = token;
+    els.roiPanel.hidden = false;
+    updateRoiToolbar();
+    try {
+      const [leftCanvas, rightCanvas] = await Promise.all([
+        state.leftSource.renderPage(state.roiPage),
+        state.rightSource.renderPage(state.roiPage),
+      ]);
+      if (token !== state.roiRenderToken) return;
+      drawPreviewCanvas(els.roiLeftCanvas, leftCanvas);
+      drawPreviewCanvas(els.roiRightCanvas, rightCanvas);
+      renderRoiSelection("left");
+      renderRoiSelection("right");
+    } catch (error) {
+      if (token === state.roiRenderToken) setProgressIdle(error.message || "แสดงตัวอย่างเอกสารไม่สำเร็จ");
+    }
+  }
+
+  function updateRoiToolbar() {
+    const pageCount = getSharedPageCount();
+    els.roiPageLabel.textContent = `หน้า ${state.roiPage} / ${pageCount}`;
+    els.roiPrevious.disabled = state.roiPage <= 1;
+    els.roiNext.disabled = state.roiPage >= pageCount;
+    els.roiApplyRange.disabled = !pageCount;
+  }
+
+  function drawPreviewCanvas(target, source) {
+    const scale = Math.min(1, 960 / Math.max(source.width, source.height));
+    target.width = Math.max(1, Math.round(source.width * scale));
+    target.height = Math.max(1, Math.round(source.height * scale));
+    const context = target.getContext("2d", { alpha: false });
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, target.width, target.height);
+    context.drawImage(source, 0, 0, target.width, target.height);
+  }
+
+  function clearPreviewCanvas(canvas) {
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+
+  function renderRoiSelection(side) {
+    const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
+    const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
+    const region = getRoi(state.roiPage, side);
+    const custom = hasCustomRoi(state.roiPage, side);
+    selection.classList.toggle("default", !custom);
+    selection.style.left = `${region.x * 100}%`;
+    selection.style.top = `${region.y * 100}%`;
+    selection.style.width = `${region.width * 100}%`;
+    selection.style.height = `${region.height * 100}%`;
+    selection.setAttribute("aria-label", custom ? "พื้นที่เปรียบเทียบที่เลือก" : "ใช้ทั้งหน้า");
+    stage.classList.toggle("has-custom-selection", custom);
+  }
+
+  function bindRoiStage(side) {
+    const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
+    const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !state.leftSource || !state.rightSource) return;
+      const point = getStagePoint(stage, event);
+      const handle = event.target.closest(".roi-handle")?.dataset.handle;
+      const startedOnSelection = event.target.closest(".roi-selection") === selection && hasCustomRoi(state.roiPage, side);
+      state.roiDrag = {
+        side,
+        mode: handle ? "resize" : startedOnSelection ? "move" : "create",
+        handle,
+        start: point,
+        initial: { ...getRoi(state.roiPage, side) },
+        pointerId: event.pointerId,
+      };
+      stage.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    stage.addEventListener("pointermove", (event) => updateRoiDrag(side, stage, event));
+    stage.addEventListener("pointerup", (event) => finishRoiDrag(side, stage, event));
+    stage.addEventListener("pointercancel", (event) => finishRoiDrag(side, stage, event));
+  }
+
+  function updateRoiDrag(side, stage, event) {
+    const drag = state.roiDrag;
+    if (!drag || drag.side !== side || drag.pointerId !== event.pointerId) return;
+    const point = getStagePoint(stage, event);
+    let region;
+    if (drag.mode === "create") {
+      region = regionFromPoints(drag.start, point);
+    } else if (drag.mode === "move") {
+      region = {
+        ...drag.initial,
+        x: clamp(drag.initial.x + point.x - drag.start.x, 0, 1 - drag.initial.width),
+        y: clamp(drag.initial.y + point.y - drag.start.y, 0, 1 - drag.initial.height),
+      };
+    } else {
+      region = resizeRegion(drag.initial, drag.handle, point);
+    }
+    setRoi(state.roiPage, side, region);
+    event.preventDefault();
+  }
+
+  function finishRoiDrag(side, stage, event) {
+    const drag = state.roiDrag;
+    if (!drag || drag.side !== side || drag.pointerId !== event.pointerId) return;
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+    state.roiDrag = null;
+  }
+}
+
+function normalizeRoi(region) {
+  const width = clamp(Number(region?.width) || 0, MIN_REGION_SIZE, 1);
+  const height = clamp(Number(region?.height) || 0, MIN_REGION_SIZE, 1);
+  return {
+    x: clamp(Number(region?.x) || 0, 0, 1 - width),
+    y: clamp(Number(region?.y) || 0, 0, 1 - height),
+    width,
+    height,
+  };
+}
+
+function getStagePoint(stage, event) {
+  const bounds = stage.getBoundingClientRect();
+  return {
+    x: clamp((event.clientX - bounds.left) / Math.max(1, bounds.width), 0, 1),
+    y: clamp((event.clientY - bounds.top) / Math.max(1, bounds.height), 0, 1),
+  };
+}
+
+function regionFromPoints(start, end) {
+  let left = Math.min(start.x, end.x);
+  let right = Math.max(start.x, end.x);
+  let top = Math.min(start.y, end.y);
+  let bottom = Math.max(start.y, end.y);
+  if (right - left < MIN_REGION_SIZE) {
+    if (end.x >= start.x) right = Math.min(1, left + MIN_REGION_SIZE);
+    else left = Math.max(0, right - MIN_REGION_SIZE);
+  }
+  if (bottom - top < MIN_REGION_SIZE) {
+    if (end.y >= start.y) bottom = Math.min(1, top + MIN_REGION_SIZE);
+    else top = Math.max(0, bottom - MIN_REGION_SIZE);
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function resizeRegion(region, handle, point) {
+  let left = region.x;
+  let right = region.x + region.width;
+  let top = region.y;
+  let bottom = region.y + region.height;
+  if (handle?.includes("w")) left = clamp(point.x, 0, right - MIN_REGION_SIZE);
+  if (handle?.includes("e")) right = clamp(point.x, left + MIN_REGION_SIZE, 1);
+  if (handle?.includes("n")) top = clamp(point.y, 0, bottom - MIN_REGION_SIZE);
+  if (handle?.includes("s")) bottom = clamp(point.y, top + MIN_REGION_SIZE, 1);
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function roiToPixelRect(region, canvas) {
+  const normalized = normalizeRoi(region);
+  const x = clamp(Math.floor(normalized.x * canvas.width), 0, Math.max(0, canvas.width - 1));
+  const y = clamp(Math.floor(normalized.y * canvas.height), 0, Math.max(0, canvas.height - 1));
+  const right = clamp(Math.ceil((normalized.x + normalized.width) * canvas.width), x + 1, canvas.width);
+  const bottom = clamp(Math.ceil((normalized.y + normalized.height) * canvas.height), y + 1, canvas.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function cropCanvas(source, region) {
+  const rect = roiToPixelRect(region, source);
+  const canvas = document.createElement("canvas");
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  const context = canvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(source, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+  return canvas;
+}
+
+function mapCropBoxesToPage(boxes, region, pageCanvas, cropCanvas) {
+  const rect = roiToPixelRect(region, pageCanvas);
+  const scaleX = rect.width / Math.max(1, cropCanvas.width);
+  const scaleY = rect.height / Math.max(1, cropCanvas.height);
+  return boxes.map((box) => {
+    const left = clamp(Math.round(rect.x + (box.x * scaleX)), rect.x, rect.x + rect.width - 1);
+    const top = clamp(Math.round(rect.y + (box.y * scaleY)), rect.y, rect.y + rect.height - 1);
+    const right = clamp(Math.round(rect.x + ((box.x + box.width) * scaleX)), left + 1, rect.x + rect.width);
+    const bottom = clamp(Math.round(rect.y + ((box.y + box.height) * scaleY)), top + 1, rect.y + rect.height);
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  });
 }
 
 async function openDocumentSource(file) {
@@ -512,10 +862,11 @@ async function renderImageFile(file) {
 
 function comparePageCanvases(leftCanvas, rightCanvas) {
   const { referenceCanvas, comparisonCanvas } = normalizePair(leftCanvas, rightCanvas);
-  const offset = findBestTranslation(referenceCanvas, comparisonCanvas);
-  const alignedComparison = translateCanvas(comparisonCanvas, offset.x, offset.y);
-  const boxes = findDifferenceBoxes(referenceCanvas, alignedComparison);
-  return { referenceCanvas, comparisonCanvas: alignedComparison, boxes };
+  const offset = findBestTranslation(comparisonCanvas, referenceCanvas);
+  const alignedReference = translateCanvas(referenceCanvas, offset.x, offset.y);
+  const visualComparable = offset.score <= MAX_VISUAL_ALIGNMENT_MISMATCH;
+  const boxes = visualComparable ? findDifferenceBoxes(alignedReference, comparisonCanvas) : [];
+  return { referenceCanvas: alignedReference, comparisonCanvas, boxes, visualComparable };
 }
 
 function geminiReviewBoxes(review, width, height) {
@@ -532,39 +883,38 @@ function geminiReviewBoxes(review, width, height) {
     const top = clamp(Math.round((y / 1000) * height), 0, height - 1);
     const right = clamp(Math.round(((x + boxWidth) / 1000) * width), left + 1, width);
     const bottom = clamp(Math.round(((y + boxHeight) / 1000) * height), top + 1, height);
+    if (
+      (right - left) * (bottom - top) > width * height * 0.16
+      || right - left > width * 0.82
+      || bottom - top > height * 0.72
+    ) return null;
     return { x: left, y: top, width: right - left, height: bottom - top };
   }).filter(Boolean);
 }
 
 function normalizePair(leftCanvas, rightCanvas) {
-  const referenceCanvas = cloneCanvas(leftCanvas);
+  const comparisonCanvas = cloneCanvas(rightCanvas);
+  const referenceCanvas = document.createElement("canvas");
+  referenceCanvas.width = comparisonCanvas.width;
+  referenceCanvas.height = comparisonCanvas.height;
+  const context = referenceCanvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, referenceCanvas.width, referenceCanvas.height);
   if (Math.abs(leftCanvas.width - rightCanvas.width) <= 3 && Math.abs(leftCanvas.height - rightCanvas.height) <= 3) {
-    const comparisonCanvas = document.createElement("canvas");
-    comparisonCanvas.width = referenceCanvas.width;
-    comparisonCanvas.height = referenceCanvas.height;
-    const context = comparisonCanvas.getContext("2d", { alpha: false });
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, comparisonCanvas.width, comparisonCanvas.height);
-    context.drawImage(rightCanvas, 0, 0, comparisonCanvas.width, comparisonCanvas.height);
+    context.drawImage(leftCanvas, 0, 0, referenceCanvas.width, referenceCanvas.height);
     return { referenceCanvas, comparisonCanvas };
   }
 
   const leftBounds = findInkBounds(leftCanvas) || { x: 0, y: 0, width: leftCanvas.width, height: leftCanvas.height };
   const rightBounds = findInkBounds(rightCanvas) || { x: 0, y: 0, width: rightCanvas.width, height: rightCanvas.height };
-  const scaleX = leftBounds.width / Math.max(1, rightBounds.width);
-  const scaleY = leftBounds.height / Math.max(1, rightBounds.height);
-  const comparisonCanvas = document.createElement("canvas");
-  comparisonCanvas.width = referenceCanvas.width;
-  comparisonCanvas.height = referenceCanvas.height;
-  const context = comparisonCanvas.getContext("2d", { alpha: false });
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, comparisonCanvas.width, comparisonCanvas.height);
+  const scaleX = rightBounds.width / Math.max(1, leftBounds.width);
+  const scaleY = rightBounds.height / Math.max(1, leftBounds.height);
   context.drawImage(
-    rightCanvas,
-    leftBounds.x - rightBounds.x * scaleX,
-    leftBounds.y - rightBounds.y * scaleY,
-    rightCanvas.width * scaleX,
-    rightCanvas.height * scaleY,
+    leftCanvas,
+    rightBounds.x - leftBounds.x * scaleX,
+    rightBounds.y - leftBounds.y * scaleY,
+    leftCanvas.width * scaleX,
+    leftCanvas.height * scaleY,
   );
   return { referenceCanvas, comparisonCanvas };
 }
@@ -614,6 +964,7 @@ function findBestTranslation(referenceCanvas, comparisonCanvas) {
   return {
     x: Math.round(best.x * (referenceCanvas.width / targetWidth)),
     y: Math.round(best.y * (referenceCanvas.height / targetHeight)),
+    score: best.score,
   };
 }
 
@@ -684,7 +1035,32 @@ function findDifferenceBoxes(referenceCanvas, comparisonCanvas) {
       if (largestDelta > 38 && (leftInk || rightInk)) mask[position] = 1;
     }
   }
-  return mergeBoxes(findComponents(dilateMask(mask, width, height), width, height), Math.max(16, Math.round(width * 0.013)));
+  const limits = localBoxLimits(width, height);
+  const candidates = findComponents(dilateMask(mask, width, height), width, height)
+    .filter((box) => isFocusedDifferenceBox(box, width, height, limits));
+  return mergeBoxes(candidates, Math.max(4, Math.round(width * 0.005)), limits)
+    .map(({ pixels, ...box }) => box);
+}
+
+function localBoxLimits(width, height) {
+  return {
+    maxWidth: Math.round(width * 0.82),
+    maxHeight: Math.round(height * 0.72),
+    maxArea: width * height * 0.16,
+    maxExpansion: 4,
+  };
+}
+
+function isFocusedDifferenceBox(box, width, height, limits) {
+  const widthRatio = box.width / width;
+  const heightRatio = box.height / height;
+  const area = box.width * box.height;
+  const density = box.pixels / Math.max(1, area);
+  if (area > limits.maxArea || box.width > limits.maxWidth || box.height > limits.maxHeight) return false;
+  // Table borders and other structural scan differences are broad but sparse, not a local content change.
+  if ((widthRatio > 0.72 && heightRatio < 0.055) || (heightRatio > 0.72 && widthRatio < 0.055)) return false;
+  if (density < 0.035 && (widthRatio > 0.28 || heightRatio > 0.28)) return false;
+  return true;
 }
 
 function luminance(data, pixel) {
@@ -748,13 +1124,13 @@ function findComponents(mask, width, height) {
     const componentWidth = maxX - minX + 1;
     const componentHeight = maxY - minY + 1;
     if (tail >= MIN_COMPONENT_PIXELS && componentWidth >= 3 && componentHeight >= 3) {
-      boxes.push({ x: minX, y: minY, width: componentWidth, height: componentHeight });
+      boxes.push({ x: minX, y: minY, width: componentWidth, height: componentHeight, pixels: tail });
     }
   }
   return boxes;
 }
 
-function mergeBoxes(input, margin) {
+function mergeBoxes(input, margin, limits = {}) {
   const boxes = input.map((box) => ({ ...box }));
   let changed = true;
   while (changed) {
@@ -762,7 +1138,9 @@ function mergeBoxes(input, margin) {
     outer: for (let index = 0; index < boxes.length; index += 1) {
       for (let other = index + 1; other < boxes.length; other += 1) {
         if (!boxesTouch(boxes[index], boxes[other], margin)) continue;
-        boxes[index] = unionBox(boxes[index], boxes[other]);
+        const merged = unionBox(boxes[index], boxes[other]);
+        if (!canMergeBoxes(boxes[index], boxes[other], merged, limits)) continue;
+        boxes[index] = merged;
         boxes.splice(other, 1);
         changed = true;
         break outer;
@@ -770,6 +1148,18 @@ function mergeBoxes(input, margin) {
     }
   }
   return boxes.sort((a, b) => a.y - b.y || a.x - b.x);
+}
+
+function canMergeBoxes(first, second, merged, limits) {
+  if (limits.maxWidth && merged.width > limits.maxWidth) return false;
+  if (limits.maxHeight && merged.height > limits.maxHeight) return false;
+  const mergedArea = merged.width * merged.height;
+  if (limits.maxArea && mergedArea > limits.maxArea) return false;
+  if (limits.maxExpansion) {
+    const sourceArea = (first.width * first.height) + (second.width * second.height);
+    if (mergedArea > sourceArea * limits.maxExpansion) return false;
+  }
+  return true;
 }
 
 function boxesTouch(first, second, margin) {

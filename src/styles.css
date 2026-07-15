@@ -888,6 +888,40 @@ td {
   font-weight: 600;
 }
 
+.text-difference-panel {
+  padding: 10px 16px 12px;
+  background: #fffdfd;
+  border-bottom: 1px solid var(--line);
+}
+
+.text-difference-panel .eyebrow {
+  margin-bottom: 6px;
+}
+
+.text-difference-panel ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.text-difference-panel li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #3f3f46;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.text-difference-kind {
+  flex: 0 0 auto;
+  min-width: 32px;
+  color: #991b1b;
+  font-weight: 700;
+}
+
 .icon-button {
   display: inline-flex;
   align-items: center;

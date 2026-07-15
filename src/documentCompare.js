@@ -3,6 +3,7 @@ import JSZip from "jszip";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorkerSource from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { reviewDocumentDifference } from "./gemini.js";
+import { buildPdfTextEvidence, createPdfTextPage, findPdfTextDifferences } from "./pdfTextDiff.js";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSource;
 
@@ -139,7 +140,7 @@ export function createDocumentCompare(root) {
         <div class="compare-result-body">
           <div class="table-frame compare-table-frame">
             <table>
-              <thead><tr><th>Page</th><th>Difference</th><th>Gemini</th></tr></thead>
+              <thead><tr><th>Page</th><th>Difference</th><th>Detail</th></tr></thead>
               <tbody id="compareResultBody"><tr><td colspan="3" class="empty-cell">ผลลัพธ์จะแสดงหลังเปรียบเทียบเอกสาร</td></tr></tbody>
             </table>
           </div>
@@ -147,6 +148,10 @@ export function createDocumentCompare(root) {
             <div class="preview-heading">
               <div><p class="eyebrow">Preview</p><h3 id="comparePreviewTitle">ภาพผลลัพธ์</h3></div>
               <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลดภาพหน้านี้" disabled><i data-lucide="download"></i></button>
+            </div>
+            <div class="text-difference-panel" id="compareTextDifferencePanel" hidden>
+              <p class="eyebrow">Text differences</p>
+              <ul id="compareTextDifferenceList"></ul>
             </div>
             <div class="preview-canvas-wrap">
               <img id="comparePreviewImage" alt="ภาพเอกสารที่วงจุดต่างสีแดง" hidden />
@@ -185,6 +190,8 @@ export function createDocumentCompare(root) {
     previewImage: root.querySelector("#comparePreviewImage"),
     previewEmpty: root.querySelector("#comparePreviewEmpty"),
     downloadCurrent: root.querySelector("#compareDownloadCurrent"),
+    textDifferencePanel: root.querySelector("#compareTextDifferencePanel"),
+    textDifferenceList: root.querySelector("#compareTextDifferenceList"),
     roiPanel: root.querySelector("#compareRoiPanel"),
     roiPageLabel: root.querySelector("#compareRoiPageLabel"),
     roiPrevious: root.querySelector("#compareRoiPrevious"),
@@ -347,12 +354,16 @@ export function createDocumentCompare(root) {
         if (comparisonToken !== state.compareToken) return;
         const completed = page - startPage;
         setProgressValue(`กำลังเทียบหน้า ${page}`, completed, total);
-        const [leftCanvas, rightCanvas] = await Promise.all([
+        const [leftCanvas, rightCanvas, leftTextPage, rightTextPage] = await Promise.all([
           state.leftSource.renderPage(page),
           state.rightSource.renderPage(page),
+          state.leftSource.extractTextPage(page),
+          state.rightSource.extractTextPage(page),
         ]);
         const leftRegion = getRoi(page, "left");
         const rightRegion = getRoi(page, "right");
+        const textFindings = findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion);
+        const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, { label: finding.label }));
         const leftArea = cropCanvas(leftCanvas, leftRegion);
         const rightArea = cropCanvas(rightCanvas, rightRegion);
         const comparison = comparePageCanvases(leftArea, rightArea);
@@ -366,6 +377,7 @@ export function createDocumentCompare(root) {
               rightCanvas: comparison.comparisonCanvas,
               page,
               apiKey,
+              textEvidence: buildPdfTextEvidence(textFindings),
             });
             const geminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
             // Gemini boxes are semantic, so they take precedence for documents whose layouts differ.
@@ -380,7 +392,8 @@ export function createDocumentCompare(root) {
             gemini = { error: error.message || "Gemini review failed." };
           }
         }
-        const boxes = mapCropBoxesToPage(cropBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
+        const visualBoxes = mapCropBoxesToPage(cropBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
+        const boxes = combineMarkerBoxes(textBoxes, visualBoxes);
         const imageBlob = boxes.length
           ? await canvasToBlob(drawDifferenceMarkers(rightCanvas, boxes))
           : null;
@@ -390,6 +403,7 @@ export function createDocumentCompare(root) {
           imageBlob,
           gemini,
           visualComparable: comparison.visualComparable,
+          textFindings,
         });
         state.results = rows;
         renderResults();
@@ -432,6 +446,8 @@ export function createDocumentCompare(root) {
     els.previewEmpty.hidden = false;
     els.previewEmpty.textContent = "เลือกหน้าที่พบจุดต่างเพื่อดูภาพ";
     els.downloadCurrent.disabled = true;
+    els.textDifferencePanel.hidden = true;
+    els.textDifferenceList.innerHTML = "";
   }
 
   function renderResults() {
@@ -442,14 +458,14 @@ export function createDocumentCompare(root) {
     els.downloadPanel.hidden = !changedRows.length;
     if (!state.results.length) return;
     els.resultBody.innerHTML = state.results.map((row) => {
-      const geminiText = row.gemini?.error
+      const detailText = row.gemini?.error
         ? "ตรวจไม่สำเร็จ"
-        : row.gemini?.summary || (!row.visualComparable ? "โครงสร้างต่างกัน" : (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-"));
+        : row.gemini?.summary || row.textFindings?.[0]?.description || (!row.visualComparable ? "โครงสร้างต่างกัน" : (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-"));
       return `
         <tr data-page="${row.page}" class="${state.selectedPage === row.page ? "selected" : ""}">
           <td>${row.page}</td>
           <td><span class="difference-status ${row.boxes.length ? "has-difference" : "no-difference"}">${row.boxes.length ? `พบ ${row.boxes.length} จุด` : "ไม่พบ"}</span></td>
-          <td class="gemini-summary">${escapeHtml(geminiText)}</td>
+          <td class="gemini-summary">${escapeHtml(detailText)}</td>
         </tr>
       `;
     }).join("");
@@ -460,6 +476,7 @@ export function createDocumentCompare(root) {
     if (!row) return;
     state.selectedPage = page;
     renderResults();
+    renderTextFindings(row.textFindings);
     revokePreviewUrl();
     els.previewTitle.textContent = `หน้า ${page}`;
     if (!row.imageBlob) {
@@ -551,6 +568,18 @@ export function createDocumentCompare(root) {
   function revokePreviewUrl() {
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
     state.previewUrl = null;
+  }
+
+  function renderTextFindings(findings) {
+    if (!findings?.length) {
+      els.textDifferencePanel.hidden = true;
+      els.textDifferenceList.innerHTML = "";
+      return;
+    }
+    els.textDifferencePanel.hidden = false;
+    els.textDifferenceList.innerHTML = findings.slice(0, 8).map((finding) => `
+      <li><span class="text-difference-kind">${escapeHtml(textFindingKind(finding.kind))}</span><span>${escapeHtml(finding.description)}</span></li>
+    `).join("");
   }
 
   function clearRoiState() {
@@ -812,6 +841,44 @@ function mapCropBoxesToPage(boxes, region, pageCanvas, cropCanvas) {
   });
 }
 
+function combineMarkerBoxes(textBoxes, visualBoxes) {
+  const combined = [];
+  [...textBoxes, ...visualBoxes].forEach((box) => {
+    const duplicateIndex = combined.findIndex((existing) => markerBoxesDescribeSameArea(existing, box));
+    if (duplicateIndex < 0) {
+      combined.push(box);
+      return;
+    }
+    if (box.label && !combined[duplicateIndex].label) combined[duplicateIndex] = box;
+  });
+  return combined;
+}
+
+function markerBoxesDescribeSameArea(first, second) {
+  const intersectionLeft = Math.max(first.x, second.x);
+  const intersectionTop = Math.max(first.y, second.y);
+  const intersectionRight = Math.min(first.x + first.width, second.x + second.width);
+  const intersectionBottom = Math.min(first.y + first.height, second.y + second.height);
+  const intersection = Math.max(0, intersectionRight - intersectionLeft) * Math.max(0, intersectionBottom - intersectionTop);
+  const firstArea = first.width * first.height;
+  const secondArea = second.width * second.height;
+  if (intersection / Math.max(1, Math.min(firstArea, secondArea)) >= 0.45) return true;
+  const firstCenterX = first.x + (first.width / 2);
+  const firstCenterY = first.y + (first.height / 2);
+  const secondCenterX = second.x + (second.width / 2);
+  const secondCenterY = second.y + (second.height / 2);
+  return Math.abs(firstCenterX - secondCenterX) <= Math.max(first.width, second.width) * 0.55
+    && Math.abs(firstCenterY - secondCenterY) <= Math.max(first.height, second.height) * 0.75;
+}
+
+function normalizedBoxToCanvas(box, canvas, metadata = {}) {
+  const x = clamp(Math.round((Number(box?.x) || 0) * canvas.width), 0, Math.max(0, canvas.width - 1));
+  const y = clamp(Math.round((Number(box?.y) || 0) * canvas.height), 0, Math.max(0, canvas.height - 1));
+  const right = clamp(Math.round(((Number(box?.x) || 0) + (Number(box?.width) || 0)) * canvas.width), x + 1, canvas.width);
+  const bottom = clamp(Math.round(((Number(box?.y) || 0) + (Number(box?.height) || 0)) * canvas.height), y + 1, canvas.height);
+  return { x, y, width: right - x, height: bottom - y, ...metadata };
+}
+
 async function openDocumentSource(file) {
   if (isPdf(file)) {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -820,14 +887,24 @@ async function openDocumentSource(file) {
     return {
       pageCount: pdf.numPages,
       renderPage: async (pageNumber) => renderPdfPage(pdf, pageNumber),
+      extractTextPage: async (pageNumber) => extractPdfTextPage(pdf, pageNumber),
       close: () => pdf.destroy(),
     };
   }
   return {
     pageCount: 1,
     renderPage: async () => renderImageFile(file),
+    extractTextPage: async () => null,
     close: () => {},
   };
+}
+
+async function extractPdfTextPage(pdf, pageNumber) {
+  const page = await pdf.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const textContent = await page.getTextContent();
+  page.cleanup();
+  return createPdfTextPage(textContent, viewport);
 }
 
 async function renderPdfPage(pdf, pageNumber) {
@@ -1198,8 +1275,42 @@ function drawDifferenceMarkers(canvas, boxes) {
     context.beginPath();
     context.ellipse(box.x + (box.width / 2), box.y + (box.height / 2), radiusX, radiusY, 0, 0, Math.PI * 2);
     context.stroke();
+    if (box.label) drawMarkerLabel(context, result, box, radiusY, String(box.label));
   });
   return result;
+}
+
+function drawMarkerLabel(context, canvas, box, radiusY, label) {
+  const fontSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.012), 12, 18);
+  const horizontalPadding = Math.round(fontSize * 0.62);
+  const verticalPadding = Math.round(fontSize * 0.42);
+  context.save();
+  context.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
+  const text = truncateCanvasText(context, label, canvas.width * 0.42);
+  const textWidth = context.measureText(text).width;
+  const labelWidth = Math.min(canvas.width - 8, textWidth + (horizontalPadding * 2));
+  const labelHeight = fontSize + (verticalPadding * 2);
+  const x = clamp(box.x + (box.width / 2) - (labelWidth / 2), 4, canvas.width - labelWidth - 4);
+  let y = box.y - radiusY - labelHeight - 5;
+  if (y < 4) y = Math.min(canvas.height - labelHeight - 4, box.y + radiusY + 5);
+  context.fillStyle = "rgba(255, 255, 255, 0.96)";
+  context.strokeStyle = "#dc2626";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.roundRect(x, y, labelWidth, labelHeight, Math.max(3, Math.round(fontSize * 0.3)));
+  context.fill();
+  context.stroke();
+  context.fillStyle = "#b91c1c";
+  context.textBaseline = "middle";
+  context.fillText(text, x + horizontalPadding, y + (labelHeight / 2));
+  context.restore();
+}
+
+function truncateCanvasText(context, value, maximumWidth) {
+  if (context.measureText(value).width <= maximumWidth) return value;
+  let text = value;
+  while (text.length > 1 && context.measureText(`${text}...`).width > maximumWidth) text = text.slice(0, -1);
+  return `${text}...`;
 }
 
 function cloneCanvas(source) {
@@ -1223,8 +1334,13 @@ function canvasToBlob(canvas) {
 }
 
 function buildSummaryCsv(rows) {
-  const header = ["page", "visual_difference_count", "gemini_summary"];
-  const data = rows.map((row) => [row.page, row.boxes.length, row.gemini?.summary || row.gemini?.error || ""]);
+  const header = ["page", "difference_count", "text_differences", "gemini_summary"];
+  const data = rows.map((row) => [
+    row.page,
+    row.boxes.length,
+    (row.textFindings || []).map((finding) => finding.description).join(" | "),
+    row.gemini?.summary || row.gemini?.error || "",
+  ]);
   return [header, ...data].map((line) => line.map(csvCell).join(",")).join("\n");
 }
 
@@ -1264,4 +1380,10 @@ function formatBytes(bytes) {
 
 function escapeHtml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+
+function textFindingKind(kind) {
+  if (kind === "missing_from_comparison") return "หาย";
+  if (kind === "missing_from_reference") return "เพิ่ม";
+  return "แก้ไข";
 }

@@ -609,21 +609,6 @@ td {
   font-size: 15px;
 }
 
-.roi-toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.roi-page-label {
-  min-width: 78px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: center;
-  white-space: nowrap;
-}
-
 .roi-editor-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -654,6 +639,27 @@ td {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.roi-page-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.roi-page-picker select {
+  width: 86px;
+  height: 36px;
+  padding: 0 28px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
 }
 
 .roi-stage {
@@ -711,9 +717,13 @@ td {
 }
 
 .roi-handle.nw { top: 0; left: 0; cursor: nwse-resize; transform: translate(-50%, -50%); }
+.roi-handle.n { top: 0; left: 50%; cursor: ns-resize; transform: translate(-50%, -50%); }
 .roi-handle.ne { top: 0; right: 0; cursor: nesw-resize; transform: translate(50%, -50%); }
+.roi-handle.e { top: 50%; right: 0; cursor: ew-resize; transform: translate(50%, -50%); }
 .roi-handle.sw { bottom: 0; left: 0; cursor: nesw-resize; transform: translate(-50%, 50%); }
+.roi-handle.s { bottom: 0; left: 50%; cursor: ns-resize; transform: translate(-50%, 50%); }
 .roi-handle.se { right: 0; bottom: 0; cursor: nwse-resize; transform: translate(50%, 50%); }
+.roi-handle.w { top: 50%; left: 0; cursor: ew-resize; transform: translate(-50%, -50%); }
 
 .compare-drop-grid {
   display: grid;
@@ -1033,10 +1043,6 @@ button.download-link {
   .roi-toolbar {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .roi-toolbar-actions {
-    width: 100%;
   }
 
   .preview-canvas-wrap {
@@ -1390,13 +1396,6 @@ button.download-link {
   border-top: 0;
 }
 
-.roi-page-label {
-  min-width: 170px;
-  max-width: 310px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .roi-document-header {
   min-height: 46px;
 }
@@ -1537,14 +1536,14 @@ button.download-link {
     flex-direction: column;
   }
 
-  .roi-toolbar-actions {
-    width: 100%;
+  .roi-document-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
-  .roi-page-label {
-    min-width: 0;
-    max-width: none;
-    flex: 1;
+  .roi-document-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .metric-strip {

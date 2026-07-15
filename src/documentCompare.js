@@ -30,7 +30,7 @@ export function createDocumentCompare(root) {
     pageSelectionAnchors: { left: null, right: null },
     pagePickerToken: 0,
     thumbnailObserver: null,
-    roiPairIndex: 0,
+    roiPages: { left: null, right: null },
     roiRenderToken: 0,
     roiSelections: new Map(),
     roiDrag: null,
@@ -125,17 +125,18 @@ export function createDocumentCompare(root) {
             <p class="eyebrow">Compare area</p>
             <h2>พื้นที่เปรียบเทียบ</h2>
           </div>
-          <div class="roi-toolbar-actions">
-            <button class="icon-button" id="compareRoiPrevious" type="button" title="คู่หน้าก่อนหน้า" aria-label="คู่หน้าก่อนหน้า"><i data-lucide="chevron-left"></i></button>
-            <span class="roi-page-label" id="compareRoiPageLabel">คู่หน้า -</span>
-            <button class="icon-button" id="compareRoiNext" type="button" title="คู่หน้าถัดไป" aria-label="คู่หน้าถัดไป"><i data-lucide="chevron-right"></i></button>
-          </div>
         </div>
         <div class="roi-editor-grid">
           <section class="roi-document">
             <div class="roi-document-header">
               <span>ต้นฉบับ</span>
               <div class="roi-document-actions">
+                <div class="roi-page-picker">
+                  <span>หน้า</span>
+                  <button class="icon-button" id="compareRoiLeftPrevious" type="button" title="หน้าต้นฉบับก่อนหน้า" aria-label="หน้าต้นฉบับก่อนหน้า"><i data-lucide="chevron-left"></i></button>
+                  <select id="compareRoiLeftPage" aria-label="เลือกหน้าต้นฉบับสำหรับกำหนดพื้นที่"></select>
+                  <button class="icon-button" id="compareRoiLeftNext" type="button" title="หน้าต้นฉบับถัดไป" aria-label="หน้าต้นฉบับถัดไป"><i data-lucide="chevron-right"></i></button>
+                </div>
                 <button class="icon-button" id="compareRoiApplyLeft" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก"><i data-lucide="copy"></i></button>
                 <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ" aria-label="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="maximize"></i></button>
               </div>
@@ -143,8 +144,9 @@ export function createDocumentCompare(root) {
             <div class="roi-stage" id="compareRoiLeftStage">
               <canvas id="compareRoiLeftCanvas"></canvas>
               <div class="roi-selection default" id="compareRoiLeftSelection" data-side="left">
-                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle ne" data-handle="ne"></span>
-                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle se" data-handle="se"></span>
+                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle n" data-handle="n"></span><span class="roi-handle ne" data-handle="ne"></span>
+                <span class="roi-handle e" data-handle="e"></span><span class="roi-handle se" data-handle="se"></span><span class="roi-handle s" data-handle="s"></span>
+                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle w" data-handle="w"></span>
               </div>
             </div>
           </section>
@@ -152,6 +154,12 @@ export function createDocumentCompare(root) {
             <div class="roi-document-header">
               <span>ฉบับเปรียบเทียบ</span>
               <div class="roi-document-actions">
+                <div class="roi-page-picker">
+                  <span>หน้า</span>
+                  <button class="icon-button" id="compareRoiRightPrevious" type="button" title="หน้าฉบับเปรียบเทียบก่อนหน้า" aria-label="หน้าฉบับเปรียบเทียบก่อนหน้า"><i data-lucide="chevron-left"></i></button>
+                  <select id="compareRoiRightPage" aria-label="เลือกหน้าฉบับเปรียบเทียบสำหรับกำหนดพื้นที่"></select>
+                  <button class="icon-button" id="compareRoiRightNext" type="button" title="หน้าฉบับเปรียบเทียบถัดไป" aria-label="หน้าฉบับเปรียบเทียบถัดไป"><i data-lucide="chevron-right"></i></button>
+                </div>
                 <button class="icon-button" id="compareRoiApplyRight" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก"><i data-lucide="copy"></i></button>
                 <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ" aria-label="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="maximize"></i></button>
               </div>
@@ -159,8 +167,9 @@ export function createDocumentCompare(root) {
             <div class="roi-stage" id="compareRoiRightStage">
               <canvas id="compareRoiRightCanvas"></canvas>
               <div class="roi-selection default" id="compareRoiRightSelection" data-side="right">
-                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle ne" data-handle="ne"></span>
-                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle se" data-handle="se"></span>
+                <span class="roi-handle nw" data-handle="nw"></span><span class="roi-handle n" data-handle="n"></span><span class="roi-handle ne" data-handle="ne"></span>
+                <span class="roi-handle e" data-handle="e"></span><span class="roi-handle se" data-handle="se"></span><span class="roi-handle s" data-handle="s"></span>
+                <span class="roi-handle sw" data-handle="sw"></span><span class="roi-handle w" data-handle="w"></span>
               </div>
             </div>
           </section>
@@ -250,9 +259,12 @@ export function createDocumentCompare(root) {
     textDifferencePanel: root.querySelector("#compareTextDifferencePanel"),
     textDifferenceList: root.querySelector("#compareTextDifferenceList"),
     roiPanel: root.querySelector("#compareRoiPanel"),
-    roiPageLabel: root.querySelector("#compareRoiPageLabel"),
-    roiPrevious: root.querySelector("#compareRoiPrevious"),
-    roiNext: root.querySelector("#compareRoiNext"),
+    roiLeftPage: root.querySelector("#compareRoiLeftPage"),
+    roiRightPage: root.querySelector("#compareRoiRightPage"),
+    roiLeftPrevious: root.querySelector("#compareRoiLeftPrevious"),
+    roiLeftNext: root.querySelector("#compareRoiLeftNext"),
+    roiRightPrevious: root.querySelector("#compareRoiRightPrevious"),
+    roiRightNext: root.querySelector("#compareRoiRightNext"),
     roiApplyLeft: root.querySelector("#compareRoiApplyLeft"),
     roiApplyRight: root.querySelector("#compareRoiApplyRight"),
     roiResetLeft: root.querySelector("#compareRoiResetLeft"),
@@ -274,8 +286,12 @@ export function createDocumentCompare(root) {
   els.resetButton.addEventListener("click", resetComparison);
   els.downloadPdf.addEventListener("click", downloadComparedPdf);
   els.downloadCurrent.addEventListener("click", downloadCurrentComparisonPdf);
-  els.roiPrevious.addEventListener("click", () => changeRoiPair(-1));
-  els.roiNext.addEventListener("click", () => changeRoiPair(1));
+  els.roiLeftPage.addEventListener("change", () => selectRoiPage("left"));
+  els.roiRightPage.addEventListener("change", () => selectRoiPage("right"));
+  els.roiLeftPrevious.addEventListener("click", () => changeRoiPage("left", -1));
+  els.roiLeftNext.addEventListener("click", () => changeRoiPage("left", 1));
+  els.roiRightPrevious.addEventListener("click", () => changeRoiPage("right", -1));
+  els.roiRightNext.addEventListener("click", () => changeRoiPage("right", 1));
   els.roiApplyLeft.addEventListener("click", () => applyRoiToSelectedPages("left"));
   els.roiApplyRight.addEventListener("click", () => applyRoiToSelectedPages("right"));
   els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
@@ -359,7 +375,8 @@ export function createDocumentCompare(root) {
     state.pageSelection.right = new Set();
     state.pageSelectionAnchors.left = null;
     state.pageSelectionAnchors.right = null;
-    state.roiPairIndex = 0;
+    state.roiPages.left = null;
+    state.roiPages.right = null;
     els.pagePicker.hidden = true;
     els.leftPageThumbnails.innerHTML = "";
     els.rightPageThumbnails.innerHTML = "";
@@ -466,7 +483,7 @@ export function createDocumentCompare(root) {
     const leftPages = getSelectedPages("left");
     const rightPages = getSelectedPages("right");
     const pairs = getPagePairs();
-    state.roiPairIndex = pairs.length ? clamp(state.roiPairIndex, 0, pairs.length - 1) : 0;
+    normalizeRoiPages();
     els.leftPageCount.textContent = leftPages.length + " / " + state.leftSource.pageCount + " หน้า";
     els.rightPageCount.textContent = rightPages.length + " / " + state.rightSource.pageCount + " หน้า";
     els.leftPageExpression.value = formatPageExpression(leftPages);
@@ -509,8 +526,15 @@ export function createDocumentCompare(root) {
     return pages[Math.round(position * (pages.length - 1))];
   }
 
-  function getActivePair() {
-    return getPagePairs()[state.roiPairIndex] || null;
+  function normalizeRoiPages() {
+    ["left", "right"].forEach((side) => {
+      const pages = getSelectedPages(side);
+      if (!pages.includes(state.roiPages[side])) state.roiPages[side] = pages[0] || null;
+    });
+  }
+
+  function getActiveRoiPage(side) {
+    return state.roiPages[side];
   }
 
   function pagePairKey(pair) {
@@ -603,7 +627,8 @@ export function createDocumentCompare(root) {
     state.pageSelection.right = new Set(pageNumbers(state.rightSource.pageCount));
     state.pageSelectionAnchors.left = null;
     state.pageSelectionAnchors.right = null;
-    state.roiPairIndex = 0;
+    state.roiPages.left = 1;
+    state.roiPages.right = 1;
     rebuildPagePicker();
     setProgressIdle("พร้อมเทียบ " + getPagePairs().length + " คู่หน้า");
     void renderRoiPreviews();
@@ -960,7 +985,8 @@ export function createDocumentCompare(root) {
   function clearRoiState() {
     state.roiRenderToken += 1;
     state.roiSelections.clear();
-    state.roiPairIndex = 0;
+    state.roiPages.left = null;
+    state.roiPages.right = null;
     state.roiDrag = null;
     els.roiPanel.hidden = true;
     clearPreviewCanvas(els.roiLeftCanvas);
@@ -986,25 +1012,33 @@ export function createDocumentCompare(root) {
   }
 
   function resetRoi(side) {
-    const pair = getActivePair();
-    if (!pair) return;
-    const page = side === "left" ? pair.leftPage : pair.rightPage;
+    const page = getActiveRoiPage(side);
+    if (!page) return;
     state.roiSelections.delete(roiSelectionKey(side, page));
     renderRoiSelection(side);
   }
 
-  function changeRoiPair(offset) {
-    const pairs = getPagePairs();
-    const next = clamp(state.roiPairIndex + offset, 0, Math.max(0, pairs.length - 1));
-    if (next === state.roiPairIndex) return;
-    state.roiPairIndex = next;
+  function selectRoiPage(side) {
+    const select = side === "left" ? els.roiLeftPage : els.roiRightPage;
+    const page = Number(select.value);
+    if (!getSelectedPages(side).includes(page)) return;
+    state.roiPages[side] = page;
+    void renderRoiPreviews();
+  }
+
+  function changeRoiPage(side, offset) {
+    const pages = getSelectedPages(side);
+    const currentIndex = pages.indexOf(getActiveRoiPage(side));
+    if (!pages.length || currentIndex < 0) return;
+    const nextIndex = clamp(currentIndex + offset, 0, pages.length - 1);
+    if (nextIndex === currentIndex) return;
+    state.roiPages[side] = pages[nextIndex];
     void renderRoiPreviews();
   }
 
   function applyRoiToSelectedPages(side) {
-    const active = getActivePair();
-    if (!active) return;
-    const activePage = side === "left" ? active.leftPage : active.rightPage;
+    const activePage = getActiveRoiPage(side);
+    if (!activePage) return;
     const selection = state.roiSelections.get(roiSelectionKey(side, activePage));
     const pages = getSelectedPages(side);
     pages.forEach((page) => {
@@ -1019,21 +1053,21 @@ export function createDocumentCompare(root) {
 
   async function renderRoiPreviews() {
     if (!state.leftSource || !state.rightSource) return;
-    const pairs = getPagePairs();
-    if (!pairs.length) {
+    normalizeRoiPages();
+    const leftPage = getActiveRoiPage("left");
+    const rightPage = getActiveRoiPage("right");
+    if (!leftPage || !rightPage) {
       els.roiPanel.hidden = true;
       return;
     }
-    state.roiPairIndex = clamp(state.roiPairIndex, 0, pairs.length - 1);
-    const pair = pairs[state.roiPairIndex];
     const token = state.roiRenderToken + 1;
     state.roiRenderToken = token;
     els.roiPanel.hidden = false;
-    updateRoiToolbar();
+    updateRoiPageControls();
     try {
       const [leftCanvas, rightCanvas] = await Promise.all([
-        state.leftSource.renderPage(pair.leftPage),
-        state.rightSource.renderPage(pair.rightPage),
+        state.leftSource.renderPage(leftPage),
+        state.rightSource.renderPage(rightPage),
       ]);
       if (token !== state.roiRenderToken) return;
       drawPreviewCanvas(els.roiLeftCanvas, leftCanvas);
@@ -1045,16 +1079,24 @@ export function createDocumentCompare(root) {
     }
   }
 
-  function updateRoiToolbar() {
-    const pairs = getPagePairs();
-    const pair = getActivePair();
-    els.roiPageLabel.textContent = pair
-      ? "คู่ " + (state.roiPairIndex + 1) + "/" + pairs.length + " · " + describePagePair(pair)
-      : "คู่หน้า -";
-    els.roiPrevious.disabled = state.roiPairIndex <= 0;
-    els.roiNext.disabled = state.roiPairIndex >= pairs.length - 1;
-    els.roiApplyLeft.disabled = !pair;
-    els.roiApplyRight.disabled = !pair;
+  function updateRoiPageControls() {
+    ["left", "right"].forEach((side) => {
+      const pages = getSelectedPages(side);
+      const activePage = getActiveRoiPage(side);
+      const select = side === "left" ? els.roiLeftPage : els.roiRightPage;
+      const previous = side === "left" ? els.roiLeftPrevious : els.roiRightPrevious;
+      const next = side === "left" ? els.roiLeftNext : els.roiRightNext;
+      const apply = side === "left" ? els.roiApplyLeft : els.roiApplyRight;
+      const reset = side === "left" ? els.roiResetLeft : els.roiResetRight;
+      select.innerHTML = pages.map((page) => `<option value="${page}">หน้า ${page}</option>`).join("");
+      select.value = String(activePage || "");
+      select.disabled = !activePage;
+      const activeIndex = pages.indexOf(activePage);
+      previous.disabled = activeIndex <= 0;
+      next.disabled = activeIndex < 0 || activeIndex >= pages.length - 1;
+      apply.disabled = !activePage;
+      reset.disabled = !activePage;
+    });
   }
 
   function drawPreviewCanvas(target, source) {
@@ -1075,9 +1117,8 @@ export function createDocumentCompare(root) {
   function renderRoiSelection(side) {
     const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
-    const pair = getActivePair();
-    if (!pair) return;
-    const page = side === "left" ? pair.leftPage : pair.rightPage;
+    const page = getActiveRoiPage(side);
+    if (!page) return;
     const region = getRoi(page, side);
     const custom = hasCustomRoi(page, side);
     selection.classList.toggle("default", !custom);
@@ -1094,9 +1135,8 @@ export function createDocumentCompare(root) {
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !state.leftSource || !state.rightSource) return;
-      const pair = getActivePair();
-      if (!pair) return;
-      const page = side === "left" ? pair.leftPage : pair.rightPage;
+      const page = getActiveRoiPage(side);
+      if (!page) return;
       const point = getStagePoint(stage, event);
       const handle = event.target.closest(".roi-handle")?.dataset.handle;
       const startedOnSelection = event.target.closest(".roi-selection") === selection && hasCustomRoi(page, side);

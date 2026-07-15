@@ -129,14 +129,16 @@ export function createDocumentCompare(root) {
             <button class="icon-button" id="compareRoiPrevious" type="button" title="คู่หน้าก่อนหน้า" aria-label="คู่หน้าก่อนหน้า"><i data-lucide="chevron-left"></i></button>
             <span class="roi-page-label" id="compareRoiPageLabel">คู่หน้า -</span>
             <button class="icon-button" id="compareRoiNext" type="button" title="คู่หน้าถัดไป" aria-label="คู่หน้าถัดไป"><i data-lucide="chevron-right"></i></button>
-            <button class="icon-button" id="compareRoiApplyRange" type="button" title="ใช้พื้นที่นี้กับทุกคู่หน้าที่เลือก" aria-label="ใช้พื้นที่นี้กับทุกคู่หน้าที่เลือก"><i data-lucide="copy"></i></button>
           </div>
         </div>
         <div class="roi-editor-grid">
           <section class="roi-document">
             <div class="roi-document-header">
               <span>ต้นฉบับ</span>
-              <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="maximize"></i></button>
+              <div class="roi-document-actions">
+                <button class="icon-button" id="compareRoiApplyLeft" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก"><i data-lucide="copy"></i></button>
+                <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ" aria-label="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="maximize"></i></button>
+              </div>
             </div>
             <div class="roi-stage" id="compareRoiLeftStage">
               <canvas id="compareRoiLeftCanvas"></canvas>
@@ -149,7 +151,10 @@ export function createDocumentCompare(root) {
           <section class="roi-document">
             <div class="roi-document-header">
               <span>ฉบับเปรียบเทียบ</span>
-              <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="maximize"></i></button>
+              <div class="roi-document-actions">
+                <button class="icon-button" id="compareRoiApplyRight" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก"><i data-lucide="copy"></i></button>
+                <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ" aria-label="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="maximize"></i></button>
+              </div>
             </div>
             <div class="roi-stage" id="compareRoiRightStage">
               <canvas id="compareRoiRightCanvas"></canvas>
@@ -248,7 +253,8 @@ export function createDocumentCompare(root) {
     roiPageLabel: root.querySelector("#compareRoiPageLabel"),
     roiPrevious: root.querySelector("#compareRoiPrevious"),
     roiNext: root.querySelector("#compareRoiNext"),
-    roiApplyRange: root.querySelector("#compareRoiApplyRange"),
+    roiApplyLeft: root.querySelector("#compareRoiApplyLeft"),
+    roiApplyRight: root.querySelector("#compareRoiApplyRight"),
     roiResetLeft: root.querySelector("#compareRoiResetLeft"),
     roiResetRight: root.querySelector("#compareRoiResetRight"),
     roiLeftStage: root.querySelector("#compareRoiLeftStage"),
@@ -270,7 +276,8 @@ export function createDocumentCompare(root) {
   els.downloadCurrent.addEventListener("click", downloadCurrentComparisonPdf);
   els.roiPrevious.addEventListener("click", () => changeRoiPair(-1));
   els.roiNext.addEventListener("click", () => changeRoiPair(1));
-  els.roiApplyRange.addEventListener("click", applyRoiToSelectedPairs);
+  els.roiApplyLeft.addEventListener("click", () => applyRoiToSelectedPages("left"));
+  els.roiApplyRight.addEventListener("click", () => applyRoiToSelectedPages("right"));
   els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
   els.roiResetRight.addEventListener("click", () => resetRoi("right"));
   bindRoiStage("left");
@@ -994,21 +1001,20 @@ export function createDocumentCompare(root) {
     void renderRoiPreviews();
   }
 
-  function applyRoiToSelectedPairs() {
+  function applyRoiToSelectedPages(side) {
     const active = getActivePair();
-    const pairs = getPagePairs();
-    if (!active || !pairs.length) return;
-    const leftSelection = state.roiSelections.get(roiSelectionKey("left", active.leftPage));
-    const rightSelection = state.roiSelections.get(roiSelectionKey("right", active.rightPage));
-    pairs.forEach((pair) => {
-      const leftKey = roiSelectionKey("left", pair.leftPage);
-      const rightKey = roiSelectionKey("right", pair.rightPage);
-      if (leftSelection) state.roiSelections.set(leftKey, { ...leftSelection });
-      else state.roiSelections.delete(leftKey);
-      if (rightSelection) state.roiSelections.set(rightKey, { ...rightSelection });
-      else state.roiSelections.delete(rightKey);
+    if (!active) return;
+    const activePage = side === "left" ? active.leftPage : active.rightPage;
+    const selection = state.roiSelections.get(roiSelectionKey(side, activePage));
+    const pages = getSelectedPages(side);
+    pages.forEach((page) => {
+      const key = roiSelectionKey(side, page);
+      if (selection) state.roiSelections.set(key, { ...selection });
+      else state.roiSelections.delete(key);
     });
-    setProgressIdle("ใช้พื้นที่ของ " + describePagePair(active) + " กับ " + pairs.length + " คู่หน้า");
+    renderRoiSelection(side);
+    const documentLabel = side === "left" ? "ต้นฉบับ" : "ฉบับเปรียบเทียบ";
+    setProgressIdle("คัดลอกพื้นที่ของหน้า " + activePage + " ไปยัง " + pages.length + " หน้า" + documentLabel);
   }
 
   async function renderRoiPreviews() {
@@ -1047,7 +1053,8 @@ export function createDocumentCompare(root) {
       : "คู่หน้า -";
     els.roiPrevious.disabled = state.roiPairIndex <= 0;
     els.roiNext.disabled = state.roiPairIndex >= pairs.length - 1;
-    els.roiApplyRange.disabled = !pair;
+    els.roiApplyLeft.disabled = !pair;
+    els.roiApplyRight.disabled = !pair;
   }
 
   function drawPreviewCanvas(target, source) {

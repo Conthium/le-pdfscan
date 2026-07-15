@@ -650,6 +650,12 @@ td {
   font-weight: 600;
 }
 
+.roi-document-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .roi-stage {
   position: relative;
   overflow: hidden;

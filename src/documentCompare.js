@@ -8,6 +8,7 @@ import { buildPdfTextEvidence, createPdfTextPage, findPdfTextDifferences } from 
 GlobalWorkerOptions.workerSrc = pdfWorkerSource;
 
 const MAX_RENDER_EDGE = 1800;
+const THUMBNAIL_RENDER_EDGE = 240;
 const MIN_COMPONENT_PIXELS = 24;
 const FULL_REGION = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
 const MIN_REGION_SIZE = 0.025;
@@ -24,9 +25,13 @@ export function createDocumentCompare(root) {
     compareToken: 0,
     loadTokens: { left: 0, right: 0 },
     results: [],
-    selectedPage: null,
+    selectedResultId: null,
     previewUrl: null,
-    roiPage: 1,
+    pageSelection: { left: new Set(), right: new Set() },
+    pageSelectionAnchors: { left: null, right: null },
+    pagePickerToken: 0,
+    thumbnailObserver: null,
+    roiPairIndex: 0,
     roiRenderToken: 0,
     roiSelections: new Map(),
     roiDrag: null,
@@ -34,7 +39,14 @@ export function createDocumentCompare(root) {
 
   root.innerHTML = `
     <section class="workspace compare-workspace">
-      <aside class="control-panel compare-controls">
+      <section class="compare-setup">
+        <div class="compare-setup-heading">
+          <div>
+            <p class="eyebrow">Document compare</p>
+            <h2>เลือกเอกสาร</h2>
+          </div>
+          <button class="icon-button" id="compareResetButton" type="button" title="ล้างเอกสาร" aria-label="ล้างเอกสาร"><i data-lucide="rotate-ccw"></i></button>
+        </div>
         <div class="compare-drop-grid">
           <label class="drop-zone compact" id="compareLeftDropZone">
             <input id="compareLeftInput" type="file" accept="application/pdf,image/png,image/jpeg,image/webp,.pdf,.png,.jpg,.jpeg,.webp" />
@@ -49,13 +61,8 @@ export function createDocumentCompare(root) {
             <span class="drop-subtitle" id="compareRightMeta">PDF หรือภาพ</span>
           </label>
         </div>
-
-        <div class="field-stack">
-          <div class="compare-page-fields">
-            <label><span>หน้าเริ่ม</span><input id="compareStartPage" type="number" min="1" value="1" /></label>
-            <label><span>หน้าสิ้นสุด</span><input id="compareEndPage" type="number" min="1" value="" /></label>
-          </div>
-          <div class="gemini-settings">
+        <div class="compare-action-bar">
+          <div class="compare-gemini-settings">
             <label class="check-row">
               <input id="compareUseGemini" type="checkbox" />
               <span>Gemini scan</span>
@@ -65,22 +72,54 @@ export function createDocumentCompare(root) {
               <input id="compareGeminiKey" type="password" autocomplete="off" placeholder="Vercel environment เมื่อเว้นว่าง" />
             </label>
           </div>
+          <div class="compare-primary-actions">
+            <button class="primary" id="compareRunButton" disabled><i data-lucide="scan-search"></i><span>เปรียบเทียบ</span></button>
+            <div class="download-panel" id="compareDownloadPanel" hidden>
+              <button class="download-link" id="compareDownloadZip"><i data-lucide="archive"></i><span>ภาพจุดต่างทั้งหมด</span></button>
+            </div>
+          </div>
         </div>
-
-        <div class="actions">
-          <button class="primary" id="compareRunButton" disabled><i data-lucide="scan-search"></i><span>เปรียบเทียบ</span></button>
-          <button id="compareResetButton"><i data-lucide="rotate-ccw"></i><span>รีเซ็ต</span></button>
-        </div>
-
         <div class="progress-wrap idle" id="compareProgressWrap">
           <div class="progress-label"><span id="compareProgressText">เลือกเอกสารสองไฟล์</span><span id="compareProgressCount" class="progress-count"></span></div>
           <div class="progress-track"><div id="compareProgressBar"></div></div>
         </div>
+      </section>
 
-        <div class="download-panel" id="compareDownloadPanel" hidden>
-          <button class="download-link" id="compareDownloadZip"><i data-lucide="archive"></i><span>ภาพจุดต่างทั้งหมด</span></button>
+      <section class="page-picker-panel" id="comparePagePicker" hidden>
+        <div class="page-picker-heading">
+          <div>
+            <p class="eyebrow">Page selection</p>
+            <h2>เลือกหน้าที่จะเปรียบเทียบ</h2>
+          </div>
+          <span class="page-pair-summary" id="comparePairSummary">0 คู่</span>
         </div>
-      </aside>
+        <div class="page-picker-grid">
+          <section class="page-picker-document">
+            <div class="page-picker-document-header">
+              <div><span class="page-picker-title">ต้นฉบับ</span><span class="page-selection-count" id="compareLeftPageCount">0 / 0 หน้า</span></div>
+              <div class="page-picker-tools">
+                <label class="page-range-field"><span>ช่วงหน้า</span><input id="compareLeftPageExpression" type="text" inputmode="text" autocomplete="off" placeholder="1,5-8" /></label>
+                <button class="icon-button" id="compareLeftApplyPages" type="button" title="ใช้ช่วงหน้าที่ระบุ" aria-label="ใช้ช่วงหน้าที่ระบุ"><i data-lucide="check"></i></button>
+                <button class="icon-button" id="compareLeftSelectAll" type="button" title="เลือกทุกหน้า" aria-label="เลือกทุกหน้า"><i data-lucide="layers-3"></i></button>
+                <button class="icon-button" id="compareLeftClearPages" type="button" title="ยกเลิกเลือกทุกหน้า" aria-label="ยกเลิกเลือกทุกหน้า"><i data-lucide="x"></i></button>
+              </div>
+            </div>
+            <div class="page-thumbnail-grid" id="compareLeftPageThumbnails" aria-label="หน้าของต้นฉบับ"></div>
+          </section>
+          <section class="page-picker-document">
+            <div class="page-picker-document-header">
+              <div><span class="page-picker-title">ฉบับเปรียบเทียบ</span><span class="page-selection-count" id="compareRightPageCount">0 / 0 หน้า</span></div>
+              <div class="page-picker-tools">
+                <label class="page-range-field"><span>ช่วงหน้า</span><input id="compareRightPageExpression" type="text" inputmode="text" autocomplete="off" placeholder="1,5-8" /></label>
+                <button class="icon-button" id="compareRightApplyPages" type="button" title="ใช้ช่วงหน้าที่ระบุ" aria-label="ใช้ช่วงหน้าที่ระบุ"><i data-lucide="check"></i></button>
+                <button class="icon-button" id="compareRightSelectAll" type="button" title="เลือกทุกหน้า" aria-label="เลือกทุกหน้า"><i data-lucide="layers-3"></i></button>
+                <button class="icon-button" id="compareRightClearPages" type="button" title="ยกเลิกเลือกทุกหน้า" aria-label="ยกเลิกเลือกทุกหน้า"><i data-lucide="x"></i></button>
+              </div>
+            </div>
+            <div class="page-thumbnail-grid" id="compareRightPageThumbnails" aria-label="หน้าของฉบับเปรียบเทียบ"></div>
+          </section>
+        </div>
+      </section>
 
       <section class="roi-panel" id="compareRoiPanel" hidden>
         <div class="roi-toolbar">
@@ -89,10 +128,10 @@ export function createDocumentCompare(root) {
             <h2>พื้นที่เปรียบเทียบ</h2>
           </div>
           <div class="roi-toolbar-actions">
-            <button class="icon-button" id="compareRoiPrevious" type="button" title="หน้าก่อนหน้า"><i data-lucide="chevron-left"></i></button>
-            <span class="roi-page-label" id="compareRoiPageLabel">หน้า -</span>
-            <button class="icon-button" id="compareRoiNext" type="button" title="หน้าถัดไป"><i data-lucide="chevron-right"></i></button>
-            <button class="icon-button" id="compareRoiApplyRange" type="button" title="ใช้กรอบนี้กับทุกหน้าในช่วงที่เลือก"><i data-lucide="copy"></i></button>
+            <button class="icon-button" id="compareRoiPrevious" type="button" title="คู่หน้าก่อนหน้า" aria-label="คู่หน้าก่อนหน้า"><i data-lucide="chevron-left"></i></button>
+            <span class="roi-page-label" id="compareRoiPageLabel">คู่หน้า -</span>
+            <button class="icon-button" id="compareRoiNext" type="button" title="คู่หน้าถัดไป" aria-label="คู่หน้าถัดไป"><i data-lucide="chevron-right"></i></button>
+            <button class="icon-button" id="compareRoiApplyRange" type="button" title="ใช้พื้นที่นี้กับทุกคู่หน้าที่เลือก" aria-label="ใช้พื้นที่นี้กับทุกคู่หน้าที่เลือก"><i data-lucide="copy"></i></button>
           </div>
         </div>
         <div class="roi-editor-grid">
@@ -125,22 +164,22 @@ export function createDocumentCompare(root) {
         </div>
       </section>
 
-      <section class="result-panel compare-results">
+      <section class="result-panel compare-results" id="compareResults">
         <div class="result-header">
           <div>
             <p class="eyebrow">Document compare</p>
             <h2>จุดต่างระหว่างเอกสาร</h2>
           </div>
           <div class="metric-strip">
-            <div><strong id="comparePageCount">0</strong><span>หน้าที่เทียบ</span></div>
-            <div><strong id="compareChangedPageCount">0</strong><span>หน้าที่ต่าง</span></div>
+            <div><strong id="comparePageCount">0</strong><span>คู่ที่เทียบ</span></div>
+            <div><strong id="compareChangedPageCount">0</strong><span>คู่ที่ต่าง</span></div>
             <div><strong id="compareDifferenceCount">0</strong><span>จุดต่าง</span></div>
           </div>
         </div>
         <div class="compare-result-body">
           <div class="table-frame compare-table-frame">
             <table>
-              <thead><tr><th>Page</th><th>Difference</th><th>Detail</th></tr></thead>
+              <thead><tr><th>คู่หน้า</th><th>จุดต่าง</th><th>รายละเอียด</th></tr></thead>
               <tbody id="compareResultBody"><tr><td colspan="3" class="empty-cell">ผลลัพธ์จะแสดงหลังเปรียบเทียบเอกสาร</td></tr></tbody>
             </table>
           </div>
@@ -170,8 +209,20 @@ export function createDocumentCompare(root) {
     rightDropZone: root.querySelector("#compareRightDropZone"),
     leftMeta: root.querySelector("#compareLeftMeta"),
     rightMeta: root.querySelector("#compareRightMeta"),
-    startPage: root.querySelector("#compareStartPage"),
-    endPage: root.querySelector("#compareEndPage"),
+    pagePicker: root.querySelector("#comparePagePicker"),
+    pairSummary: root.querySelector("#comparePairSummary"),
+    leftPageCount: root.querySelector("#compareLeftPageCount"),
+    rightPageCount: root.querySelector("#compareRightPageCount"),
+    leftPageExpression: root.querySelector("#compareLeftPageExpression"),
+    rightPageExpression: root.querySelector("#compareRightPageExpression"),
+    leftApplyPages: root.querySelector("#compareLeftApplyPages"),
+    rightApplyPages: root.querySelector("#compareRightApplyPages"),
+    leftSelectAll: root.querySelector("#compareLeftSelectAll"),
+    rightSelectAll: root.querySelector("#compareRightSelectAll"),
+    leftClearPages: root.querySelector("#compareLeftClearPages"),
+    rightClearPages: root.querySelector("#compareRightClearPages"),
+    leftPageThumbnails: root.querySelector("#compareLeftPageThumbnails"),
+    rightPageThumbnails: root.querySelector("#compareRightPageThumbnails"),
     useGemini: root.querySelector("#compareUseGemini"),
     geminiKey: root.querySelector("#compareGeminiKey"),
     runButton: root.querySelector("#compareRunButton"),
@@ -182,6 +233,7 @@ export function createDocumentCompare(root) {
     progressBar: root.querySelector("#compareProgressBar"),
     downloadPanel: root.querySelector("#compareDownloadPanel"),
     downloadZip: root.querySelector("#compareDownloadZip"),
+    resultsPanel: root.querySelector("#compareResults"),
     resultBody: root.querySelector("#compareResultBody"),
     pageCount: root.querySelector("#comparePageCount"),
     changedPageCount: root.querySelector("#compareChangedPageCount"),
@@ -210,20 +262,22 @@ export function createDocumentCompare(root) {
   restoreGeminiKey();
   bindFileZone("left");
   bindFileZone("right");
+  bindPagePicker("left");
+  bindPagePicker("right");
   els.runButton.addEventListener("click", runComparison);
   els.resetButton.addEventListener("click", resetComparison);
   els.downloadZip.addEventListener("click", downloadAllDifferences);
   els.downloadCurrent.addEventListener("click", downloadCurrentDifference);
-  els.roiPrevious.addEventListener("click", () => changeRoiPage(-1));
-  els.roiNext.addEventListener("click", () => changeRoiPage(1));
-  els.roiApplyRange.addEventListener("click", applyRoiToRange);
+  els.roiPrevious.addEventListener("click", () => changeRoiPair(-1));
+  els.roiNext.addEventListener("click", () => changeRoiPair(1));
+  els.roiApplyRange.addEventListener("click", applyRoiToSelectedPairs);
   els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
   els.roiResetRight.addEventListener("click", () => resetRoi("right"));
   bindRoiStage("left");
   bindRoiStage("right");
   els.resultBody.addEventListener("click", (event) => {
-    const row = event.target.closest("tr[data-page]");
-    if (row) selectResult(Number(row.dataset.page));
+    const row = event.target.closest("tr[data-result-id]");
+    if (row) selectResult(row.dataset.resultId);
   });
   els.geminiKey.addEventListener("input", persistGeminiKey);
   createIcons({ icons });
@@ -248,6 +302,245 @@ export function createDocumentCompare(root) {
     });
   }
 
+  function bindPagePicker(side) {
+    const expression = side === "left" ? els.leftPageExpression : els.rightPageExpression;
+    const applyButton = side === "left" ? els.leftApplyPages : els.rightApplyPages;
+    const selectAllButton = side === "left" ? els.leftSelectAll : els.rightSelectAll;
+    const clearButton = side === "left" ? els.leftClearPages : els.rightClearPages;
+    const grid = side === "left" ? els.leftPageThumbnails : els.rightPageThumbnails;
+    const applyExpression = () => {
+      const source = side === "left" ? state.leftSource : state.rightSource;
+      if (!source) return;
+      try {
+        state.pageSelection[side] = parsePageExpression(expression.value, source.pageCount);
+        state.pageSelectionAnchors[side] = null;
+        updatePagePickerSelection();
+      } catch (error) {
+        setProgressIdle(error.message || "ช่วงหน้าไม่ถูกต้อง");
+      }
+    };
+    applyButton.addEventListener("click", applyExpression);
+    expression.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyExpression();
+    });
+    selectAllButton.addEventListener("click", () => {
+      const source = side === "left" ? state.leftSource : state.rightSource;
+      if (!source) return;
+      state.pageSelection[side] = new Set(pageNumbers(source.pageCount));
+      state.pageSelectionAnchors[side] = null;
+      updatePagePickerSelection();
+    });
+    clearButton.addEventListener("click", () => {
+      state.pageSelection[side].clear();
+      state.pageSelectionAnchors[side] = null;
+      updatePagePickerSelection();
+    });
+    grid.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-page]");
+      if (!button || !grid.contains(button)) return;
+      togglePageSelection(side, Number(button.dataset.page), event.shiftKey);
+    });
+  }
+
+  function clearPagePicker() {
+    state.pagePickerToken += 1;
+    state.thumbnailObserver?.disconnect();
+    state.thumbnailObserver = null;
+    state.pageSelection.left = new Set();
+    state.pageSelection.right = new Set();
+    state.pageSelectionAnchors.left = null;
+    state.pageSelectionAnchors.right = null;
+    state.roiPairIndex = 0;
+    els.pagePicker.hidden = true;
+    els.leftPageThumbnails.innerHTML = "";
+    els.rightPageThumbnails.innerHTML = "";
+    els.leftPageExpression.value = "";
+    els.rightPageExpression.value = "";
+    els.leftPageCount.textContent = "0 / 0 หน้า";
+    els.rightPageCount.textContent = "0 / 0 หน้า";
+    els.pairSummary.textContent = "0 คู่";
+  }
+
+  function rebuildPagePicker() {
+    if (!state.leftSource || !state.rightSource) return;
+    state.pagePickerToken += 1;
+    state.thumbnailObserver?.disconnect();
+    state.thumbnailObserver = null;
+    els.pagePicker.hidden = false;
+    renderPageThumbnailGrid("left");
+    renderPageThumbnailGrid("right");
+    updatePagePickerSelection();
+    observePageThumbnails();
+    createIcons({ icons });
+  }
+
+  function renderPageThumbnailGrid(side) {
+    const source = side === "left" ? state.leftSource : state.rightSource;
+    const grid = side === "left" ? els.leftPageThumbnails : els.rightPageThumbnails;
+    if (!source) {
+      grid.innerHTML = "";
+      return;
+    }
+    grid.innerHTML = pageNumbers(source.pageCount).map((page) => `
+      <button class="page-thumbnail" type="button" data-page="${page}" aria-pressed="false" title="หน้า ${page}">
+        <span class="page-thumb-preview" data-side="${side}" data-page="${page}"><span class="page-thumb-loading"></span></span>
+        <span class="page-number">${page}</span>
+        <span class="page-selection-check"><i data-lucide="check"></i></span>
+      </button>
+    `).join("");
+  }
+
+  function observePageThumbnails() {
+    const previews = [...root.querySelectorAll(".page-thumb-preview")];
+    if (!previews.length) return;
+    const render = (preview) => { void renderPageThumbnail(preview); };
+    if (!("IntersectionObserver" in window)) {
+      previews.slice(0, 16).forEach(render);
+      return;
+    }
+    state.thumbnailObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        state.thumbnailObserver?.unobserve(entry.target);
+        render(entry.target);
+      });
+    }, { rootMargin: "280px 0px" });
+    previews.forEach((preview) => state.thumbnailObserver.observe(preview));
+  }
+
+  async function renderPageThumbnail(preview) {
+    if (preview.dataset.loading || preview.dataset.ready) return;
+    const side = preview.dataset.side;
+    const page = Number(preview.dataset.page);
+    const source = side === "left" ? state.leftSource : state.rightSource;
+    if (!source || !Number.isInteger(page)) return;
+    const token = state.pagePickerToken;
+    preview.dataset.loading = "true";
+    try {
+      const canvas = await source.renderThumbnail(page);
+      if (token !== state.pagePickerToken || !preview.isConnected) return;
+      canvas.className = "page-thumb-canvas";
+      preview.replaceChildren(canvas);
+      preview.dataset.ready = "true";
+    } catch {
+      if (token !== state.pagePickerToken || !preview.isConnected) return;
+      preview.classList.add("thumbnail-error");
+    } finally {
+      delete preview.dataset.loading;
+    }
+  }
+
+  function togglePageSelection(side, page, selectRange) {
+    const source = side === "left" ? state.leftSource : state.rightSource;
+    if (!source || page < 1 || page > source.pageCount) return;
+    const selected = state.pageSelection[side];
+    const anchor = state.pageSelectionAnchors[side];
+    if (selectRange && Number.isInteger(anchor)) {
+      const start = Math.min(anchor, page);
+      const end = Math.max(anchor, page);
+      const select = !selected.has(page);
+      for (let current = start; current <= end; current += 1) {
+        if (select) selected.add(current);
+        else selected.delete(current);
+      }
+    } else if (selected.has(page)) {
+      selected.delete(page);
+    } else {
+      selected.add(page);
+    }
+    state.pageSelectionAnchors[side] = page;
+    updatePagePickerSelection();
+  }
+
+  function updatePagePickerSelection() {
+    if (!state.leftSource || !state.rightSource) return;
+    const leftPages = getSelectedPages("left");
+    const rightPages = getSelectedPages("right");
+    const pairs = getPagePairs();
+    state.roiPairIndex = pairs.length ? clamp(state.roiPairIndex, 0, pairs.length - 1) : 0;
+    els.leftPageCount.textContent = leftPages.length + " / " + state.leftSource.pageCount + " หน้า";
+    els.rightPageCount.textContent = rightPages.length + " / " + state.rightSource.pageCount + " หน้า";
+    els.leftPageExpression.value = formatPageExpression(leftPages);
+    els.rightPageExpression.value = formatPageExpression(rightPages);
+    els.pairSummary.textContent = pairs.length ? pairs.length + " คู่" : "เลือกหน้า";
+    updateThumbnailSelection("left", state.pageSelection.left);
+    updateThumbnailSelection("right", state.pageSelection.right);
+    updateButtons();
+    if (!state.processing) setProgressIdle(pairs.length ? "พร้อมเทียบ " + pairs.length + " คู่หน้า" : "เลือกหน้าทั้งสองฝั่งเพื่อจับคู่");
+    if (!els.roiPanel.hidden) void renderRoiPreviews();
+  }
+
+  function updateThumbnailSelection(side, selected) {
+    const grid = side === "left" ? els.leftPageThumbnails : els.rightPageThumbnails;
+    grid.querySelectorAll("button[data-page]").forEach((button) => {
+      const active = selected.has(Number(button.dataset.page));
+      button.classList.toggle("selected", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  function getSelectedPages(side) {
+    return [...state.pageSelection[side]].sort((first, second) => first - second);
+  }
+
+  function getPagePairs() {
+    const leftPages = getSelectedPages("left");
+    const rightPages = getSelectedPages("right");
+    const count = Math.min(leftPages.length, rightPages.length);
+    return Array.from({ length: count }, (_, index) => ({ leftPage: leftPages[index], rightPage: rightPages[index] }));
+  }
+
+  function getActivePair() {
+    return getPagePairs()[state.roiPairIndex] || null;
+  }
+
+  function pagePairKey(pair) {
+    return pair ? pair.leftPage + ":" + pair.rightPage : "";
+  }
+
+  function describePagePair(pair) {
+    return "ต้นฉบับ " + pair.leftPage + " / ฉบับ " + pair.rightPage;
+  }
+
+  function pageNumbers(count) {
+    return Array.from({ length: count }, (_, index) => index + 1);
+  }
+
+  function parsePageExpression(value, maximum) {
+    const raw = String(value || "").trim();
+    if (!raw) return new Set();
+    const pages = new Set();
+    raw.split(",").map((part) => part.trim()).filter(Boolean).forEach((part) => {
+      const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(part);
+      if (!match) throw new Error("ระบุหน้าเป็น 1,5-8");
+      const first = Number(match[1]);
+      const last = Number(match[2] || match[1]);
+      if (first < 1 || last < first || last > maximum) throw new Error("หน้าต้องอยู่ระหว่าง 1 ถึง " + maximum);
+      for (let page = first; page <= last; page += 1) pages.add(page);
+    });
+    return pages;
+  }
+
+  function formatPageExpression(pages) {
+    if (!pages.length) return "";
+    const parts = [];
+    let start = pages[0];
+    let end = pages[0];
+    pages.slice(1).forEach((page) => {
+      if (page === end + 1) {
+        end = page;
+        return;
+      }
+      parts.push(start === end ? String(start) : start + "-" + end);
+      start = page;
+      end = page;
+    });
+    parts.push(start === end ? String(start) : start + "-" + end);
+    return parts.join(",");
+  }
+
   async function loadFile(side, file) {
     if (!isSupportedDocument(file)) {
       setProgressIdle("รองรับ PDF, PNG, JPG และ WEBP เท่านั้น");
@@ -256,6 +549,7 @@ export function createDocumentCompare(root) {
     const fileToken = state.loadTokens[side] + 1;
     state.loadTokens[side] = fileToken;
     state.loadingSides[side] = true;
+    clearPagePicker();
     clearRoiState();
     clearResults();
     setFileMeta(side, `${file.name} - ${formatBytes(file.size)} - กำลังอ่าน`);
@@ -288,15 +582,13 @@ export function createDocumentCompare(root) {
   function updatePageRange() {
     const sharedPages = getSharedPageCount();
     if (!sharedPages) return;
-    state.roiPage = 1;
-    els.startPage.value = "1";
-    els.endPage.value = String(sharedPages);
-    els.startPage.max = String(sharedPages);
-    els.endPage.max = String(sharedPages);
-    const leftPages = state.leftSource?.pageCount || 0;
-    const rightPages = state.rightSource?.pageCount || 0;
-    const suffix = leftPages === rightPages ? `${sharedPages} หน้าพร้อมเปรียบเทียบ` : `เทียบได้ ${sharedPages} หน้า`;
-    setProgressIdle(suffix);
+    state.pageSelection.left = new Set(pageNumbers(sharedPages));
+    state.pageSelection.right = new Set(pageNumbers(sharedPages));
+    state.pageSelectionAnchors.left = null;
+    state.pageSelectionAnchors.right = null;
+    state.roiPairIndex = 0;
+    rebuildPagePicker();
+    setProgressIdle("พร้อมเทียบ " + sharedPages + " คู่หน้า");
     void renderRoiPreviews();
   }
 
@@ -313,15 +605,12 @@ export function createDocumentCompare(root) {
     state.loadingSides.left = false;
     state.loadingSides.right = false;
     state.processing = false;
+    clearPagePicker();
     clearRoiState();
     els.leftInput.value = "";
     els.rightInput.value = "";
     els.leftMeta.textContent = "PDF หรือภาพ";
     els.rightMeta.textContent = "PDF หรือภาพ";
-    els.startPage.value = "1";
-    els.endPage.value = "";
-    els.startPage.removeAttribute("max");
-    els.endPage.removeAttribute("max");
     clearResults();
     setProgressIdle("เลือกเอกสารสองไฟล์");
     updateButtons();
@@ -329,13 +618,9 @@ export function createDocumentCompare(root) {
 
   async function runComparison() {
     if (state.processing || !state.leftSource || !state.rightSource) return;
-    const startPage = Number.parseInt(els.startPage.value, 10);
-    const endPage = Number.parseInt(els.endPage.value, 10);
-    const sharedPages = getSharedPageCount();
-    try {
-      validateRange(startPage, endPage, sharedPages);
-    } catch (error) {
-      setProgressIdle(error.message);
+    const pagePairs = getPagePairs();
+    if (!pagePairs.length) {
+      setProgressIdle("เลือกหน้าอย่างน้อยหนึ่งคู่ก่อนเริ่มเปรียบเทียบ");
       return;
     }
 
@@ -346,22 +631,23 @@ export function createDocumentCompare(root) {
     state.processing = true;
     clearResults();
     updateButtons();
-    const total = endPage - startPage + 1;
+    const total = pagePairs.length;
     const rows = [];
 
     try {
-      for (let page = startPage; page <= endPage; page += 1) {
+      for (const [index, pair] of pagePairs.entries()) {
         if (comparisonToken !== state.compareToken) return;
-        const completed = page - startPage;
-        setProgressValue(`กำลังเทียบหน้า ${page}`, completed, total);
+        const completed = index;
+        const pairLabel = describePagePair(pair);
+        setProgressValue("กำลังเทียบ " + pairLabel, completed, total);
         const [leftCanvas, rightCanvas, leftTextPage, rightTextPage] = await Promise.all([
-          state.leftSource.renderPage(page),
-          state.rightSource.renderPage(page),
-          state.leftSource.extractTextPage(page),
-          state.rightSource.extractTextPage(page),
+          state.leftSource.renderPage(pair.leftPage),
+          state.rightSource.renderPage(pair.rightPage),
+          state.leftSource.extractTextPage(pair.leftPage),
+          state.rightSource.extractTextPage(pair.rightPage),
         ]);
-        const leftRegion = getRoi(page, "left");
-        const rightRegion = getRoi(page, "right");
+        const leftRegion = getRoi(pair.leftPage, "left");
+        const rightRegion = getRoi(pair.rightPage, "right");
         const textFindings = findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion);
         const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, { label: finding.label }));
         const leftArea = cropCanvas(leftCanvas, leftRegion);
@@ -370,12 +656,12 @@ export function createDocumentCompare(root) {
         let cropBoxes = comparison.visualComparable ? comparison.boxes : [];
         let gemini = null;
         if (useGemini) {
-          setProgressValue(`Gemini ตรวจทานหน้า ${page}`, completed, total);
+          setProgressValue("Gemini ตรวจทาน " + pairLabel, completed, total);
           try {
             gemini = await reviewDocumentDifference({
               leftCanvas: comparison.referenceCanvas,
               rightCanvas: comparison.comparisonCanvas,
-              page,
+              page: pairLabel,
               apiKey,
               textEvidence: buildPdfTextEvidence(textFindings),
             });
@@ -398,7 +684,9 @@ export function createDocumentCompare(root) {
           ? await canvasToBlob(drawDifferenceMarkers(rightCanvas, boxes))
           : null;
         rows.push({
-          page,
+          id: pagePairKey(pair),
+          leftPage: pair.leftPage,
+          rightPage: pair.rightPage,
           boxes,
           imageBlob,
           gemini,
@@ -407,15 +695,15 @@ export function createDocumentCompare(root) {
         });
         state.results = rows;
         renderResults();
-        if (!state.selectedPage && imageBlob) selectResult(page);
-        setProgressValue(`เทียบหน้า ${page} แล้ว`, page - startPage + 1, total);
+        if (!state.selectedResultId && imageBlob) selectResult(pagePairKey(pair));
+        setProgressValue("เทียบ " + pairLabel + " แล้ว", index + 1, total);
       }
       if (comparisonToken === state.compareToken) {
         const changedPages = rows.filter((row) => row.boxes.length).length;
         const needsSemanticReview = !useGemini && rows.some((row) => !row.visualComparable);
         setProgressDone(
           changedPages
-            ? `พบจุดต่าง ${changedPages} หน้า`
+            ? "พบจุดต่าง " + changedPages + " คู่"
             : needsSemanticReview
               ? "โครงสร้างต่างกัน - เปิด Gemini scan"
               : "ไม่พบจุดต่าง",
@@ -433,8 +721,9 @@ export function createDocumentCompare(root) {
 
   function clearResults() {
     state.results = [];
-    state.selectedPage = null;
+    state.selectedResultId = null;
     revokePreviewUrl();
+    els.resultsPanel.hidden = true;
     els.downloadPanel.hidden = true;
     els.pageCount.textContent = "0";
     els.changedPageCount.textContent = "0";
@@ -452,6 +741,7 @@ export function createDocumentCompare(root) {
 
   function renderResults() {
     const changedRows = state.results.filter((row) => row.boxes.length);
+    els.resultsPanel.hidden = !state.results.length;
     els.pageCount.textContent = state.results.length;
     els.changedPageCount.textContent = changedRows.length;
     els.differenceCount.textContent = state.results.reduce((sum, row) => sum + row.boxes.length, 0);
@@ -462,8 +752,8 @@ export function createDocumentCompare(root) {
         ? "ตรวจไม่สำเร็จ"
         : row.gemini?.summary || row.textFindings?.[0]?.description || (!row.visualComparable ? "โครงสร้างต่างกัน" : (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-"));
       return `
-        <tr data-page="${row.page}" class="${state.selectedPage === row.page ? "selected" : ""}">
-          <td>${row.page}</td>
+        <tr data-result-id="${row.id}" class="${state.selectedResultId === row.id ? "selected" : ""}">
+          <td>ต้นฉบับ ${row.leftPage} / ฉบับ ${row.rightPage}</td>
           <td><span class="difference-status ${row.boxes.length ? "has-difference" : "no-difference"}">${row.boxes.length ? `พบ ${row.boxes.length} จุด` : "ไม่พบ"}</span></td>
           <td class="gemini-summary">${escapeHtml(detailText)}</td>
         </tr>
@@ -471,18 +761,18 @@ export function createDocumentCompare(root) {
     }).join("");
   }
 
-  function selectResult(page) {
-    const row = state.results.find((result) => result.page === page);
+  function selectResult(resultId) {
+    const row = state.results.find((result) => result.id === resultId);
     if (!row) return;
-    state.selectedPage = page;
+    state.selectedResultId = resultId;
     renderResults();
     renderTextFindings(row.textFindings);
     revokePreviewUrl();
-    els.previewTitle.textContent = `หน้า ${page}`;
+    els.previewTitle.textContent = "ต้นฉบับ " + row.leftPage + " / ฉบับ " + row.rightPage;
     if (!row.imageBlob) {
       els.previewImage.hidden = true;
       els.previewEmpty.hidden = false;
-      els.previewEmpty.textContent = "ไม่พบจุดต่างในหน้านี้";
+      els.previewEmpty.textContent = "ไม่พบจุดต่างในคู่หน้านี้";
       els.downloadCurrent.disabled = true;
       return;
     }
@@ -500,7 +790,7 @@ export function createDocumentCompare(root) {
     try {
       const zip = new JSZip();
       rows.forEach((row) => {
-        zip.file(`difference_page_${String(row.page).padStart(3, "0")}.png`, row.imageBlob);
+        zip.file(differenceFilename(row), row.imageBlob);
       });
       zip.file("comparison-summary.csv", buildSummaryCsv(state.results));
       const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
@@ -511,12 +801,12 @@ export function createDocumentCompare(root) {
   }
 
   function downloadCurrentDifference() {
-    const row = state.results.find((result) => result.page === state.selectedPage);
-    if (row?.imageBlob) triggerDownload(row.imageBlob, `difference_page_${String(row.page).padStart(3, "0")}.png`);
+    const row = state.results.find((result) => result.id === state.selectedResultId);
+    if (row?.imageBlob) triggerDownload(row.imageBlob, differenceFilename(row));
   }
 
   function updateButtons() {
-    els.runButton.disabled = state.processing || state.loadingSides.left || state.loadingSides.right || !state.leftSource || !state.rightSource;
+    els.runButton.disabled = state.processing || state.loadingSides.left || state.loadingSides.right || !state.leftSource || !state.rightSource || !getPagePairs().length;
   }
 
   function getSharedPageCount() {
@@ -538,7 +828,7 @@ export function createDocumentCompare(root) {
     const percent = total ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
     els.progressWrap.className = "progress-wrap loading";
     els.progressText.textContent = text;
-    els.progressCount.textContent = total ? `${completed}/${total} หน้า (${Math.round(percent)}%)` : "";
+    els.progressCount.textContent = total ? `${completed}/${total} คู่ (${Math.round(percent)}%)` : "";
     els.progressBar.style.width = `${percent}%`;
   }
 
@@ -585,81 +875,81 @@ export function createDocumentCompare(root) {
   function clearRoiState() {
     state.roiRenderToken += 1;
     state.roiSelections.clear();
-    state.roiPage = 1;
+    state.roiPairIndex = 0;
     state.roiDrag = null;
     els.roiPanel.hidden = true;
     clearPreviewCanvas(els.roiLeftCanvas);
     clearPreviewCanvas(els.roiRightCanvas);
   }
 
+  function roiSelectionKey(side, page) {
+    return side + ":" + page;
+  }
+
   function getRoi(page, side) {
-    const selection = state.roiSelections.get(page)?.[side];
+    const selection = state.roiSelections.get(roiSelectionKey(side, page));
     return selection || FULL_REGION;
   }
 
   function hasCustomRoi(page, side) {
-    return Boolean(state.roiSelections.get(page)?.[side]);
+    return state.roiSelections.has(roiSelectionKey(side, page));
   }
 
   function setRoi(page, side, region) {
-    const current = state.roiSelections.get(page) || {};
-    state.roiSelections.set(page, { ...current, [side]: normalizeRoi(region) });
+    state.roiSelections.set(roiSelectionKey(side, page), normalizeRoi(region));
     renderRoiSelection(side);
   }
 
   function resetRoi(side) {
-    const current = state.roiSelections.get(state.roiPage);
-    if (!current?.[side]) return;
-    delete current[side];
-    if (Object.keys(current).length) state.roiSelections.set(state.roiPage, current);
-    else state.roiSelections.delete(state.roiPage);
+    const pair = getActivePair();
+    if (!pair) return;
+    const page = side === "left" ? pair.leftPage : pair.rightPage;
+    state.roiSelections.delete(roiSelectionKey(side, page));
     renderRoiSelection(side);
   }
 
-  function changeRoiPage(offset) {
-    const pageCount = getSharedPageCount();
-    const next = clamp(state.roiPage + offset, 1, pageCount);
-    if (next === state.roiPage) return;
-    state.roiPage = next;
+  function changeRoiPair(offset) {
+    const pairs = getPagePairs();
+    const next = clamp(state.roiPairIndex + offset, 0, Math.max(0, pairs.length - 1));
+    if (next === state.roiPairIndex) return;
+    state.roiPairIndex = next;
     void renderRoiPreviews();
   }
 
-  function applyRoiToRange() {
-    const startPage = Number.parseInt(els.startPage.value, 10);
-    const endPage = Number.parseInt(els.endPage.value, 10);
-    const pageCount = getSharedPageCount();
-    try {
-      validateRange(startPage, endPage, pageCount);
-    } catch (error) {
-      setProgressIdle(error.message);
-      return;
-    }
-    const source = state.roiSelections.get(state.roiPage) || {};
-    for (let page = startPage; page <= endPage; page += 1) {
-      const next = { ...state.roiSelections.get(page) };
-      if (source.left) next.left = { ...source.left };
-      else delete next.left;
-      if (source.right) next.right = { ...source.right };
-      else delete next.right;
-      if (Object.keys(next).length) state.roiSelections.set(page, next);
-      else state.roiSelections.delete(page);
-    }
-    setProgressIdle(`ใช้พื้นที่หน้า ${state.roiPage} กับหน้า ${startPage}-${endPage}`);
+  function applyRoiToSelectedPairs() {
+    const active = getActivePair();
+    const pairs = getPagePairs();
+    if (!active || !pairs.length) return;
+    const leftSelection = state.roiSelections.get(roiSelectionKey("left", active.leftPage));
+    const rightSelection = state.roiSelections.get(roiSelectionKey("right", active.rightPage));
+    pairs.forEach((pair) => {
+      const leftKey = roiSelectionKey("left", pair.leftPage);
+      const rightKey = roiSelectionKey("right", pair.rightPage);
+      if (leftSelection) state.roiSelections.set(leftKey, { ...leftSelection });
+      else state.roiSelections.delete(leftKey);
+      if (rightSelection) state.roiSelections.set(rightKey, { ...rightSelection });
+      else state.roiSelections.delete(rightKey);
+    });
+    setProgressIdle("ใช้พื้นที่ของ " + describePagePair(active) + " กับ " + pairs.length + " คู่หน้า");
   }
 
   async function renderRoiPreviews() {
     if (!state.leftSource || !state.rightSource) return;
-    const pageCount = getSharedPageCount();
-    if (!pageCount) return;
-    state.roiPage = clamp(state.roiPage, 1, pageCount);
+    const pairs = getPagePairs();
+    if (!pairs.length) {
+      els.roiPanel.hidden = true;
+      return;
+    }
+    state.roiPairIndex = clamp(state.roiPairIndex, 0, pairs.length - 1);
+    const pair = pairs[state.roiPairIndex];
     const token = state.roiRenderToken + 1;
     state.roiRenderToken = token;
     els.roiPanel.hidden = false;
     updateRoiToolbar();
     try {
       const [leftCanvas, rightCanvas] = await Promise.all([
-        state.leftSource.renderPage(state.roiPage),
-        state.rightSource.renderPage(state.roiPage),
+        state.leftSource.renderPage(pair.leftPage),
+        state.rightSource.renderPage(pair.rightPage),
       ]);
       if (token !== state.roiRenderToken) return;
       drawPreviewCanvas(els.roiLeftCanvas, leftCanvas);
@@ -672,11 +962,14 @@ export function createDocumentCompare(root) {
   }
 
   function updateRoiToolbar() {
-    const pageCount = getSharedPageCount();
-    els.roiPageLabel.textContent = `หน้า ${state.roiPage} / ${pageCount}`;
-    els.roiPrevious.disabled = state.roiPage <= 1;
-    els.roiNext.disabled = state.roiPage >= pageCount;
-    els.roiApplyRange.disabled = !pageCount;
+    const pairs = getPagePairs();
+    const pair = getActivePair();
+    els.roiPageLabel.textContent = pair
+      ? "คู่ " + (state.roiPairIndex + 1) + "/" + pairs.length + " · " + describePagePair(pair)
+      : "คู่หน้า -";
+    els.roiPrevious.disabled = state.roiPairIndex <= 0;
+    els.roiNext.disabled = state.roiPairIndex >= pairs.length - 1;
+    els.roiApplyRange.disabled = !pair;
   }
 
   function drawPreviewCanvas(target, source) {
@@ -697,8 +990,11 @@ export function createDocumentCompare(root) {
   function renderRoiSelection(side) {
     const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
-    const region = getRoi(state.roiPage, side);
-    const custom = hasCustomRoi(state.roiPage, side);
+    const pair = getActivePair();
+    if (!pair) return;
+    const page = side === "left" ? pair.leftPage : pair.rightPage;
+    const region = getRoi(page, side);
+    const custom = hasCustomRoi(page, side);
     selection.classList.toggle("default", !custom);
     selection.style.left = `${region.x * 100}%`;
     selection.style.top = `${region.y * 100}%`;
@@ -713,15 +1009,19 @@ export function createDocumentCompare(root) {
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !state.leftSource || !state.rightSource) return;
+      const pair = getActivePair();
+      if (!pair) return;
+      const page = side === "left" ? pair.leftPage : pair.rightPage;
       const point = getStagePoint(stage, event);
       const handle = event.target.closest(".roi-handle")?.dataset.handle;
-      const startedOnSelection = event.target.closest(".roi-selection") === selection && hasCustomRoi(state.roiPage, side);
+      const startedOnSelection = event.target.closest(".roi-selection") === selection && hasCustomRoi(page, side);
       state.roiDrag = {
         side,
+        page,
         mode: handle ? "resize" : startedOnSelection ? "move" : "create",
         handle,
         start: point,
-        initial: { ...getRoi(state.roiPage, side) },
+        initial: { ...getRoi(page, side) },
         pointerId: event.pointerId,
       };
       stage.setPointerCapture(event.pointerId);
@@ -748,7 +1048,7 @@ export function createDocumentCompare(root) {
     } else {
       region = resizeRegion(drag.initial, drag.handle, point);
     }
-    setRoi(state.roiPage, side, region);
+    setRoi(drag.page, side, region);
     event.preventDefault();
   }
 
@@ -887,6 +1187,7 @@ async function openDocumentSource(file) {
     return {
       pageCount: pdf.numPages,
       renderPage: async (pageNumber) => renderPdfPage(pdf, pageNumber),
+      renderThumbnail: async (pageNumber) => renderPdfPage(pdf, pageNumber, THUMBNAIL_RENDER_EDGE, true),
       extractTextPage: async (pageNumber) => extractPdfTextPage(pdf, pageNumber),
       close: () => pdf.destroy(),
     };
@@ -894,6 +1195,7 @@ async function openDocumentSource(file) {
   return {
     pageCount: 1,
     renderPage: async () => renderImageFile(file),
+    renderThumbnail: async () => renderImageFile(file, THUMBNAIL_RENDER_EDGE),
     extractTextPage: async () => null,
     close: () => {},
   };
@@ -907,10 +1209,11 @@ async function extractPdfTextPage(pdf, pageNumber) {
   return createPdfTextPage(textContent, viewport);
 }
 
-async function renderPdfPage(pdf, pageNumber) {
+async function renderPdfPage(pdf, pageNumber, maxRenderEdge = MAX_RENDER_EDGE, allowDownscale = false) {
   const page = await pdf.getPage(pageNumber);
   const baseViewport = page.getViewport({ scale: 1 });
-  const scale = Math.min(2.5, Math.max(1, MAX_RENDER_EDGE / Math.max(baseViewport.width, baseViewport.height)));
+  const targetScale = maxRenderEdge / Math.max(baseViewport.width, baseViewport.height);
+  const scale = Math.min(2.5, allowDownscale ? targetScale : Math.max(1, targetScale));
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.floor(viewport.width));
@@ -923,9 +1226,10 @@ async function renderPdfPage(pdf, pageNumber) {
   return canvas;
 }
 
-async function renderImageFile(file) {
+async function renderImageFile(file, maxRenderEdge = MAX_RENDER_EDGE) {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, MAX_RENDER_EDGE / Math.max(bitmap.width, bitmap.height));
+  const targetScale = maxRenderEdge / Math.max(bitmap.width, bitmap.height);
+  const scale = Math.min(1, targetScale);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -1334,14 +1638,21 @@ function canvasToBlob(canvas) {
 }
 
 function buildSummaryCsv(rows) {
-  const header = ["page", "difference_count", "text_differences", "gemini_summary"];
+  const header = ["reference_page", "comparison_page", "difference_count", "text_differences", "gemini_summary"];
   const data = rows.map((row) => [
-    row.page,
+    row.leftPage,
+    row.rightPage,
     row.boxes.length,
     (row.textFindings || []).map((finding) => finding.description).join(" | "),
     row.gemini?.summary || row.gemini?.error || "",
   ]);
   return [header, ...data].map((line) => line.map(csvCell).join(",")).join("\n");
+}
+
+function differenceFilename(row) {
+  const leftPage = String(row.leftPage).padStart(3, "0");
+  const rightPage = String(row.rightPage).padStart(3, "0");
+  return "difference_reference_" + leftPage + "_comparison_" + rightPage + ".png";
 }
 
 function csvCell(value) {
@@ -1357,12 +1668,6 @@ function triggerDownload(blob, filename) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function validateRange(startPage, endPage, pageCount) {
-  if (!Number.isInteger(startPage) || startPage < 1) throw new Error("หน้าเริ่มต้องเป็นเลขจำนวนเต็มตั้งแต่ 1 ขึ้นไป");
-  if (!Number.isInteger(endPage) || endPage < startPage) throw new Error("หน้าสิ้นสุดต้องมากกว่าหรือเท่ากับหน้าเริ่ม");
-  if (endPage > pageCount) throw new Error(`ไฟล์ทั้งสองเทียบกันได้ ${pageCount} หน้า`);
 }
 
 function isSupportedDocument(file) {

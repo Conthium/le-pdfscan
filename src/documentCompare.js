@@ -713,9 +713,6 @@ export function createDocumentCompare(root) {
           imageBlob,
           annotation: markerDrawing ? {
             overlayBlob: annotationBlob,
-            documentWidth: rightCanvas.width,
-            documentHeight: rightCanvas.height,
-            gutterWidth: markerDrawing.gutterWidth,
           } : null,
           gemini,
           visualComparable: comparison.visualComparable,
@@ -866,11 +863,9 @@ export function createDocumentCompare(root) {
       const sourceBlob = await canvasToBlob(sourceCanvas);
       const sourceImage = await outputPdf.embedPng(await sourceBlob.arrayBuffer());
       for (const row of rows) {
-        const annotation = row.annotation;
-        const gutterRatio = annotation ? annotation.gutterWidth / annotation.documentWidth : 0;
-        const page = outputPdf.addPage([sourceImage.width * (1 + gutterRatio), sourceImage.height]);
+        const page = outputPdf.addPage([sourceImage.width, sourceImage.height]);
         page.drawImage(sourceImage, { x: 0, y: 0, width: sourceImage.width, height: sourceImage.height });
-        await drawPdfAnnotationOverlay(outputPdf, page, annotation, sourceImage.width, sourceImage.height);
+        await drawPdfAnnotationOverlay(outputPdf, page, row.annotation);
       }
     }
     outputPdf.setTitle("Document comparison");
@@ -878,14 +873,10 @@ export function createDocumentCompare(root) {
     return outputPdf.save();
   }
 
-  async function drawPdfAnnotationOverlay(pdf, page, annotation, sourceWidth = page.getWidth(), sourceHeight = page.getHeight()) {
+  async function drawPdfAnnotationOverlay(pdf, page, annotation) {
     if (!annotation?.overlayBlob) return;
-    const gutterRatio = annotation.gutterWidth / annotation.documentWidth;
-    const pageHeight = page.getHeight();
-    const expandedWidth = sourceWidth * (1 + gutterRatio);
-    if (page.getWidth() !== expandedWidth || pageHeight !== sourceHeight) page.setSize(expandedWidth, sourceHeight);
     const overlay = await pdf.embedPng(await annotation.overlayBlob.arrayBuffer());
-    page.drawImage(overlay, { x: 0, y: 0, width: expandedWidth, height: sourceHeight });
+    page.drawImage(overlay, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
   }
 
   function updateButtons() {
@@ -1712,126 +1703,242 @@ function clamp(value, minimum, maximum) {
 }
 
 function drawDifferenceMarkers(canvas, boxes) {
-  const gutterWidth = clamp(Math.round(canvas.width * 0.44), 360, 560);
   const overlayCanvas = document.createElement("canvas");
-  overlayCanvas.width = canvas.width + gutterWidth;
+  overlayCanvas.width = canvas.width;
   overlayCanvas.height = canvas.height;
   const context = overlayCanvas.getContext("2d");
   const lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) * 0.0026));
   const padding = Math.max(10, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
   const badgeSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.026), 20, 32);
   const occupiedBadgeRects = [];
-
-  context.fillStyle = "#ffffff";
-  context.fillRect(canvas.width, 0, gutterWidth, canvas.height);
-  context.strokeStyle = "#d9d9d9";
-  context.lineWidth = Math.max(1, Math.round(lineWidth * 0.5));
-  context.beginPath();
-  context.moveTo(canvas.width + 0.5, 0);
-  context.lineTo(canvas.width + 0.5, canvas.height);
-  context.stroke();
+  const markers = boxes.map((box, index) => ({
+    box,
+    number: box.markerNumber || index + 1,
+    radiusX: Math.max(16, (box.width / 2) + padding),
+    radiusY: Math.max(16, (box.height / 2) + padding),
+  }));
 
   context.strokeStyle = "#dc2626";
   context.lineWidth = lineWidth;
   context.lineJoin = "round";
-  boxes.forEach((box, index) => {
-    const radiusX = Math.max(16, (box.width / 2) + padding);
-    const radiusY = Math.max(16, (box.height / 2) + padding);
+  markers.forEach((marker) => {
+    const { box, radiusX, radiusY } = marker;
     context.beginPath();
     context.ellipse(box.x + (box.width / 2), box.y + (box.height / 2), radiusX, radiusY, 0, 0, Math.PI * 2);
     context.stroke();
-    drawMarkerBadge(context, canvas, box, radiusX, radiusY, box.markerNumber || index + 1, badgeSize, occupiedBadgeRects);
+    drawMarkerBadge(context, canvas, box, radiusX, radiusY, marker.number, badgeSize, occupiedBadgeRects);
   });
-  drawMarkerCalloutRail(context, canvas, boxes, gutterWidth);
+  drawMarkerCallouts(context, canvas, markers);
 
   const previewCanvas = document.createElement("canvas");
-  previewCanvas.width = overlayCanvas.width;
+  previewCanvas.width = canvas.width;
   previewCanvas.height = overlayCanvas.height;
   const previewContext = previewCanvas.getContext("2d", { alpha: false });
   previewContext.fillStyle = "#ffffff";
   previewContext.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
   previewContext.drawImage(canvas, 0, 0);
   previewContext.drawImage(overlayCanvas, 0, 0);
-  return { previewCanvas, overlayCanvas, gutterWidth };
+  return { previewCanvas, overlayCanvas };
 }
 
-function drawMarkerCalloutRail(context, documentCanvas, boxes, gutterWidth) {
-  const documentWidth = documentCanvas.width;
-  const fontSize = clamp(Math.round(Math.min(documentCanvas.width, documentCanvas.height) * 0.022), 23, 34);
-  const railPadding = Math.round(fontSize * 0.7);
-  const titleHeight = Math.round(fontSize * 2.1);
-  const lineHeight = Math.round(fontSize * 1.28);
-  const cardWidth = gutterWidth - (railPadding * 2);
-  context.save();
-  context.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
-  context.fillStyle = "#1f2937";
-  context.textBaseline = "middle";
-  context.fillText("จุดต่าง", documentWidth + railPadding, titleHeight * 0.55);
-
-  const cards = boxes.map((box, index) => {
-    const number = box.markerNumber || index + 1;
-    const text = String(box.markerDescription || box.label || "พบความต่างจากเอกสาร").replace(/\s+/g, " ").trim();
-    const lines = wrapCanvasText(context, text, cardWidth - (fontSize * 2.35), 3);
-    const cardHeight = Math.max(fontSize * 2.05, (lines.length * lineHeight) + (fontSize * 0.9));
-    return {
-      number,
-      lines,
-      height: Math.round(cardHeight),
-      desiredY: (box.y + (box.height / 2)) - (cardHeight / 2),
-    };
-  }).sort((first, second) => first.desiredY - second.desiredY || first.number - second.number);
-
-  const topLimit = titleHeight + railPadding;
-  const bottomLimit = documentCanvas.height - railPadding;
-  const gap = Math.max(8, Math.round(fontSize * 0.34));
-  let cursor = topLimit;
-  cards.forEach((card) => {
-    card.y = Math.max(card.desiredY, cursor);
-    cursor = card.y + card.height + gap;
-  });
-  if (cursor - gap > bottomLimit) {
-    let bottom = bottomLimit;
-    [...cards].reverse().forEach((card) => {
-      card.y = Math.min(card.y, bottom - card.height);
-      bottom = card.y - gap;
-    });
+function drawMarkerCallouts(context, documentCanvas, markers) {
+  const baseFontSize = clamp(Math.round(Math.min(documentCanvas.width, documentCanvas.height) * 0.014), 15, 20);
+  const fontSizes = [baseFontSize, Math.max(13, baseFontSize - 2), 12];
+  let cards = [];
+  for (const fontSize of fontSizes) {
+    const candidates = createMarkerCalloutCards(context, documentCanvas, markers, fontSize);
+    if (placeMarkerCallouts(documentCanvas, candidates, markers)) {
+      cards = candidates;
+      break;
+    }
   }
+  if (!cards.length) return;
 
-  cards.forEach((card) => drawMarkerCalloutCard(context, documentWidth + railPadding, card.y, cardWidth, card, fontSize, lineHeight));
-  context.restore();
+  cards.forEach((card) => drawMarkerCalloutLeader(context, card));
+  cards.forEach((card) => drawMarkerCallout(context, card));
 }
 
-function drawMarkerCalloutCard(context, x, y, width, card, fontSize, lineHeight) {
-  const radius = Math.max(6, Math.round(fontSize * 0.3));
-  const badgeSize = Math.round(fontSize * 1.15);
-  const inset = Math.round(fontSize * 0.45);
-  context.fillStyle = "#fff7f7";
+function createMarkerCalloutCards(context, documentCanvas, markers, fontSize) {
+  const cardPadding = Math.max(7, Math.round(fontSize * 0.46));
+  const badgeSize = Math.max(18, Math.round(fontSize * 1.16));
+  const lineHeight = Math.round(fontSize * 1.3);
+  const maximumWidth = clamp(Math.round(documentCanvas.width * 0.3), 220, 390);
+  const minimumWidth = Math.min(maximumWidth, Math.max(172, Math.round(documentCanvas.width * 0.16)));
+  context.save();
+  context.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
+  const cards = markers.map((marker) => {
+    const text = String(marker.box.markerDescription || marker.box.label || "พบความต่างจากเอกสาร").replace(/\s+/g, " ").trim();
+    const maximumTextWidth = maximumWidth - badgeSize - (cardPadding * 3);
+    const lines = wrapCanvasText(context, text, maximumTextWidth, 4);
+    const longestLine = Math.max(...lines.map((line) => context.measureText(line).width));
+    const width = clamp(Math.ceil(longestLine + badgeSize + (cardPadding * 3)), minimumWidth, maximumWidth);
+    return {
+      ...marker,
+      lines,
+      fontSize,
+      lineHeight,
+      padding: cardPadding,
+      badgeSize,
+      width,
+      height: Math.max(badgeSize + (cardPadding * 2), (lines.length * lineHeight) + (cardPadding * 2)),
+    };
+  });
+  context.restore();
+  return cards;
+}
+
+function placeMarkerCallouts(documentCanvas, cards, markers) {
+  const sampler = createInkDensitySampler(documentCanvas);
+  const protectedRects = markers.map((marker) => ({
+    x: marker.box.x - marker.radiusX - 6,
+    y: marker.box.y - marker.radiusY - 6,
+    width: (marker.radiusX * 2) + 12,
+    height: (marker.radiusY * 2) + 12,
+  }));
+  const occupied = [];
+  const ordered = [...cards].sort((first, second) => second.height - first.height || first.box.y - second.box.y || first.number - second.number);
+  for (const card of ordered) {
+    const placement = findMarkerCalloutPlacement(documentCanvas, card, occupied, protectedRects, sampler);
+    if (!placement) return false;
+    card.x = placement.x;
+    card.y = placement.y;
+    occupied.push({ x: card.x, y: card.y, width: card.width, height: card.height });
+  }
+  return true;
+}
+
+function findMarkerCalloutPlacement(canvas, card, occupied, protectedRects, sampler) {
+  const margin = Math.max(8, Math.round(card.fontSize * 0.5));
+  const candidates = buildMarkerCalloutCandidates(canvas, card, margin);
+  let best = null;
+  for (const candidate of candidates) {
+    const rect = { x: candidate.x, y: candidate.y, width: card.width, height: card.height };
+    if (!rectFitsCanvas(rect, canvas, margin)) continue;
+    if (occupied.some((occupiedRect) => rectanglesOverlap(rect, occupiedRect, margin))) continue;
+    const protectedArea = protectedRects.reduce((total, protectedRect) => total + rectangleIntersectionArea(rect, protectedRect), 0);
+    const distance = Math.hypot(
+      (rect.x + (rect.width / 2)) - (card.box.x + (card.box.width / 2)),
+      (rect.y + (rect.height / 2)) - (card.box.y + (card.box.height / 2)),
+    );
+    const score = (sampler(rect) * 3200) + (protectedArea * 0.08) + (distance * 0.15);
+    if (!best || score < best.score) best = { ...rect, score };
+  }
+  return best;
+}
+
+function buildMarkerCalloutCandidates(canvas, card, margin) {
+  const box = card.box;
+  const left = box.x - card.radiusX;
+  const right = box.x + box.width + card.radiusX;
+  const top = box.y - card.radiusY;
+  const bottom = box.y + box.height + card.radiusY;
+  const candidates = [];
+  const offsets = [8, 20, 44, 76, 118, 172, 240, 320];
+  offsets.forEach((offset) => {
+    candidates.push(
+      { x: right + offset, y: top - card.height - offset },
+      { x: right + offset, y: bottom + offset },
+      { x: left - card.width - offset, y: top - card.height - offset },
+      { x: left - card.width - offset, y: bottom + offset },
+      { x: right + offset, y: (top + bottom - card.height) / 2 },
+      { x: left - card.width - offset, y: (top + bottom - card.height) / 2 },
+    );
+  });
+
+  const columnGap = Math.max(20, Math.round(card.fontSize * 1.2));
+  const rowGap = Math.max(14, Math.round(card.fontSize * 0.9));
+  for (let y = margin; y + card.height <= canvas.height - margin; y += card.height + rowGap) {
+    for (let x = margin; x + card.width <= canvas.width - margin; x += card.width + columnGap) {
+      candidates.push({ x, y });
+    }
+  }
+  return candidates;
+}
+
+function drawMarkerCallout(context, card) {
+  const radius = Math.max(6, Math.round(card.fontSize * 0.3));
+  const x = card.x;
+  const y = card.y;
+  context.fillStyle = "rgba(255, 255, 255, 0.96)";
   context.strokeStyle = "#fecaca";
   context.lineWidth = 1;
   context.beginPath();
-  context.roundRect(x, y, width, card.height, radius);
+  context.roundRect(x, y, card.width, card.height, radius);
   context.fill();
   context.stroke();
 
-  const badgeX = x + inset + (badgeSize / 2);
-  const badgeY = y + inset + (badgeSize / 2);
+  const badgeX = x + card.padding + (card.badgeSize / 2);
+  const badgeY = y + card.padding + (card.badgeSize / 2);
   context.fillStyle = "#dc2626";
   context.beginPath();
-  context.arc(badgeX, badgeY, badgeSize / 2, 0, Math.PI * 2);
+  context.arc(badgeX, badgeY, card.badgeSize / 2, 0, Math.PI * 2);
   context.fill();
   context.fillStyle = "#ffffff";
-  context.font = `700 ${Math.max(12, Math.round(fontSize * 0.53))}px Inter, Arial, sans-serif`;
+  context.font = `700 ${Math.max(11, Math.round(card.fontSize * 0.56))}px Inter, Arial, sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillText(String(card.number), badgeX, badgeY + 0.5);
 
   context.fillStyle = "#991b1b";
-  context.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
+  context.font = `600 ${card.fontSize}px Inter, Arial, sans-serif`;
   context.textAlign = "left";
   context.textBaseline = "top";
-  const textX = x + (badgeSize * 1.55) + inset;
-  const textY = y + inset;
-  card.lines.forEach((line, index) => context.fillText(line, textX, textY + (index * lineHeight)));
+  const textX = x + card.padding + card.badgeSize + card.padding;
+  const textY = y + card.padding;
+  card.lines.forEach((line, index) => context.fillText(line, textX, textY + (index * card.lineHeight)));
+}
+
+function drawMarkerCalloutLeader(context, card) {
+  const centerX = card.box.x + (card.box.width / 2);
+  const centerY = card.box.y + (card.box.height / 2);
+  const targetX = clamp(centerX, card.x, card.x + card.width);
+  const targetY = clamp(centerY, card.y, card.y + card.height);
+  const dx = targetX - centerX;
+  const dy = targetY - centerY;
+  const scale = 1 / Math.max(1, Math.sqrt((dx * dx) / (card.radiusX * card.radiusX) + (dy * dy) / (card.radiusY * card.radiusY)));
+  const sourceX = centerX + (dx * scale);
+  const sourceY = centerY + (dy * scale);
+  context.save();
+  context.strokeStyle = "rgba(220, 38, 38, 0.78)";
+  context.lineWidth = Math.max(1, Math.round(card.fontSize * 0.1));
+  context.beginPath();
+  context.moveTo(sourceX, sourceY);
+  context.lineTo(targetX, targetY);
+  context.stroke();
+  context.restore();
+}
+
+function createInkDensitySampler(canvas) {
+  const { data, width, height } = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
+  return (rect) => {
+    const step = Math.max(5, Math.round(Math.min(rect.width, rect.height) / 14));
+    let samples = 0;
+    let ink = 0;
+    for (let y = Math.max(0, Math.floor(rect.y)); y < Math.min(height, Math.ceil(rect.y + rect.height)); y += step) {
+      for (let x = Math.max(0, Math.floor(rect.x)); x < Math.min(width, Math.ceil(rect.x + rect.width)); x += step) {
+        const offset = ((y * width) + x) * 4;
+        const brightness = data[offset] + data[offset + 1] + data[offset + 2];
+        if (brightness < 690) ink += 1;
+        samples += 1;
+      }
+    }
+    return ink / Math.max(1, samples);
+  };
+}
+
+function rectFitsCanvas(rect, canvas, margin) {
+  return rect.x >= margin
+    && rect.y >= margin
+    && rect.x + rect.width <= canvas.width - margin
+    && rect.y + rect.height <= canvas.height - margin;
+}
+
+function rectangleIntersectionArea(first, second) {
+  const left = Math.max(first.x, second.x);
+  const top = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
 }
 
 function wrapCanvasText(context, value, maximumWidth, maximumLines) {

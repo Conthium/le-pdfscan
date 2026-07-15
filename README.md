@@ -3,7 +3,7 @@
 LE PDF Scan has two independent document workflows:
 
 - **Priority scan**: sends a PDF to the existing Python/OpenCV service, then sorts pages by the selected marker colour.
-- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, and lets users select a separate comparison area on each pair. For PDFs with a reliable text layer, it compares extracted text and marks the exact changed fields; it falls back to image comparison only when text is unavailable or garbled. Red circles are linked to readable callouts in an annotation rail, and the result exports as one combined annotated PDF while retaining the source PDF page content.
+- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, and lets users select a separate comparison area on each pair. For PDFs with a reliable text layer, it compares extracted text and marks the exact changed fields; it falls back to image comparison only when text is unavailable or garbled. Red circles have non-overlapping connected callouts placed on the original page, and the result exports as one combined annotated PDF while retaining the source PDF page dimensions and content.
 
 The two workflows do not share files, jobs, or detector state. A problem with one cannot change the behaviour of the other.
 

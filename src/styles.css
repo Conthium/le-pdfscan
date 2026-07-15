@@ -130,20 +130,6 @@ h2 {
   font-weight: 600;
 }
 
-.beta-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 .workspace {
   display: grid;
   grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
@@ -860,16 +846,6 @@ td {
 
 .compare-preview-content:has(.text-difference-panel[hidden]) {
   grid-template-columns: 1fr;
-}
-
-@media (min-width: 981px) {
-  .compare-preview-content {
-    grid-template-columns: 1fr;
-  }
-
-  .text-difference-panel {
-    display: none;
-  }
 }
 
 .preview-heading {

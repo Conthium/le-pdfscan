@@ -1,11 +1,6 @@
 # LE PDF Scan
 
-LE PDF Scan has two independent document workflows:
-
-- **Priority scan**: sends a PDF to the existing Python/OpenCV service, then sorts pages by the selected marker colour.
-- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, and lets users select a separate comparison area on each pair. For PDFs with a reliable text layer, it compares extracted text and marks the exact changed fields; it falls back to image comparison only when text is unavailable or garbled. Red circles have non-overlapping connected callouts placed on the original page, and the result exports as one combined annotated PDF while retaining the source PDF page dimensions and content.
-
-The two workflows do not share files, jobs, or detector state. A problem with one cannot change the behaviour of the other.
+LE PDF Scan currently provides a browser-based **Document compare** workflow. It compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, and lets users select a separate comparison area on each pair. For PDFs with a reliable text layer, it compares extracted text and marks the exact changed fields; it falls back to image comparison only when text is unavailable or garbled. Red circles have non-overlapping connected callouts placed on the original page, and the result exports as one combined annotated PDF while retaining the source PDF page dimensions and content.
 
 For document compare page selection, click thumbnails to toggle pages, use Shift-click to select a contiguous range, or enter a range such as `1,5-8`. All pages are selected by default. When only one page is selected on one side, it is compared against every selected page on the other side. Otherwise, the shorter page selection is distributed in document order across the longer selection so every selected page is compared.
 
@@ -26,29 +21,15 @@ npm run dev
 
 Open `http://127.0.0.1:5173`.
 
-To use Priority scan locally, run the existing scanner service in another terminal:
-
-```powershell
-python -m pip install -r requirements.txt
-uvicorn server_scanner:app --host 127.0.0.1 --port 8000
-```
-
-For a remote scanner, set this in `.env`:
-
-```text
-VITE_SCANNER_API_URL=https://your-render-service.onrender.com
-```
-
 ## Vercel
 
-Set these environment variables in Vercel:
+Set this environment variable in Vercel when using the server-side Gemini proxy:
 
 ```text
-VITE_SCANNER_API_URL=https://your-render-service.onrender.com
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-`Document compare` and its Gemini proxy deploy on Vercel. `Priority scan` continues to call the Python service because OpenCV/PDFium is not part of a static Vite deployment.
+`Document compare` and its Gemini proxy deploy on Vercel without a Python service.
 
 Build locally before publishing:
 

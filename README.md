@@ -3,7 +3,7 @@
 LE PDF Scan has two independent document workflows:
 
 - **Priority scan**: sends a PDF to the existing Python/OpenCV service, then sorts pages by the selected marker colour.
-- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, lets users select a separate comparison area on each pair, detects character-level changes from a PDF text layer when available, circles the related field in red with a numbered marker linked to a readable finding list, and exports the changed-page images as a ZIP.
+- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, and lets users select a separate comparison area on each pair. For PDFs with a reliable text layer, it compares extracted text and marks the exact changed fields; it falls back to image comparison only when text is unavailable or garbled. Red circles are linked to readable callouts in an annotation rail, and the result exports as one combined annotated PDF while retaining the source PDF page content.
 
 The two workflows do not share files, jobs, or detector state. A problem with one cannot change the behaviour of the other.
 
@@ -11,7 +11,7 @@ For document compare page selection, click thumbnails to toggle pages, use Shift
 
 ## Gemini scan
 
-Document compare can optionally use `gemini-3.1-flash-lite`. When enabled, Gemini reviews the selected left/right areas as business content, even when they are in different document layouts, writes a Thai summary, and can add a red circle for a change whose location it returns confidently. Extracted PDF text differences are passed to Gemini as evidence, so it can verify exact values such as a missing suffix rather than relying only on pixels. Pixel comparison remains available for closely aligned layouts; when the selected areas have different structures, the app suppresses broad false-positive circles and uses text/Gemini locations instead.
+Document compare can optionally use `gemini-3.1-flash-lite`. When enabled, Gemini reviews the selected left/right areas as business content, even when they are in different document layouts, and writes a clean Thai summary. Gemini's `changes[].box` values are the sole source of red circles in this mode, so its confirmed semantic findings and markers always stay together. Extracted PDF text differences are passed to Gemini as evidence, so it can verify exact values such as a missing suffix rather than relying only on pixels. Pixel comparison remains available only when a reliable text layer is not available.
 
 The web form accepts a key for the current browser tab only. For Vercel, set `GEMINI_API_KEY` in Project Environment Variables; the `/api/gemini` function keeps that key on the server. `VITE_GEMINI_API_KEY` is supported only for the same browser-side embedding pattern as LE Pre-drawing and is intentionally left blank in `.env.example` because it becomes public in the built JavaScript.
 

@@ -862,6 +862,16 @@ td {
   grid-template-columns: 1fr;
 }
 
+@media (min-width: 981px) {
+  .compare-preview-content {
+    grid-template-columns: 1fr;
+  }
+
+  .text-difference-panel {
+    display: none;
+  }
+}
+
 .preview-heading {
   display: flex;
   align-items: center;

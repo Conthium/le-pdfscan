@@ -1,9 +1,8 @@
 import { createIcons, icons } from "lucide";
-import JSZip from "jszip";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorkerSource from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import { reviewDocumentDifference } from "./gemini.js";
-import { buildPdfTextEvidence, createPdfTextPage, findPdfTextDifferences } from "./pdfTextDiff.js";
+import { buildPdfTextEvidence, createPdfTextPage, findPdfTextDifferences, hasUsablePdfText } from "./pdfTextDiff.js";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSource;
 
@@ -74,7 +73,7 @@ export function createDocumentCompare(root) {
           <div class="compare-primary-actions">
             <button class="primary" id="compareRunButton" disabled><i data-lucide="scan-search"></i><span>เปรียบเทียบ</span></button>
             <div class="download-panel" id="compareDownloadPanel" hidden>
-              <button class="download-link" id="compareDownloadZip"><i data-lucide="archive"></i><span>ภาพจุดต่างทั้งหมด</span></button>
+              <button class="download-link" id="compareDownloadPdf"><i data-lucide="file-down"></i><span>PDF ที่เปรียบเทียบแล้ว</span></button>
             </div>
           </div>
         </div>
@@ -185,7 +184,7 @@ export function createDocumentCompare(root) {
           <div class="compare-preview-panel">
             <div class="preview-heading">
               <div><p class="eyebrow">Preview</p><h3 id="comparePreviewTitle">ภาพผลลัพธ์</h3></div>
-              <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลดภาพหน้านี้" disabled><i data-lucide="download"></i></button>
+              <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลด PDF หน้านี้" disabled><i data-lucide="download"></i></button>
             </div>
             <div class="compare-preview-content">
               <div class="text-difference-panel" id="compareTextDifferencePanel" hidden>
@@ -233,7 +232,7 @@ export function createDocumentCompare(root) {
     progressCount: root.querySelector("#compareProgressCount"),
     progressBar: root.querySelector("#compareProgressBar"),
     downloadPanel: root.querySelector("#compareDownloadPanel"),
-    downloadZip: root.querySelector("#compareDownloadZip"),
+    downloadPdf: root.querySelector("#compareDownloadPdf"),
     resultsPanel: root.querySelector("#compareResults"),
     resultBody: root.querySelector("#compareResultBody"),
     pageCount: root.querySelector("#comparePageCount"),
@@ -267,8 +266,8 @@ export function createDocumentCompare(root) {
   bindPagePicker("right");
   els.runButton.addEventListener("click", runComparison);
   els.resetButton.addEventListener("click", resetComparison);
-  els.downloadZip.addEventListener("click", downloadAllDifferences);
-  els.downloadCurrent.addEventListener("click", downloadCurrentDifference);
+  els.downloadPdf.addEventListener("click", downloadComparedPdf);
+  els.downloadCurrent.addEventListener("click", downloadCurrentComparisonPdf);
   els.roiPrevious.addEventListener("click", () => changeRoiPair(-1));
   els.roiNext.addEventListener("click", () => changeRoiPair(1));
   els.roiApplyRange.addEventListener("click", applyRoiToSelectedPairs);
@@ -659,7 +658,10 @@ export function createDocumentCompare(root) {
         ]);
         const leftRegion = getRoi(pair.leftPage, "left");
         const rightRegion = getRoi(pair.rightPage, "right");
-        const textFindings = findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion);
+        const textAvailable = hasUsablePdfText(leftTextPage, rightTextPage, leftRegion, rightRegion);
+        const textFindings = textAvailable
+          ? findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion)
+          : [];
         const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, {
           label: finding.label,
           markerKind: finding.kind,
@@ -667,51 +669,65 @@ export function createDocumentCompare(root) {
         }));
         const leftArea = cropCanvas(leftCanvas, leftRegion);
         const rightArea = cropCanvas(rightCanvas, rightRegion);
-        const comparison = comparePageCanvases(leftArea, rightArea);
-        let cropBoxes = comparison.visualComparable ? comparison.boxes : [];
+        const visualFallback = !textAvailable && !useGemini;
+        const comparison = comparePageCanvases(leftArea, rightArea, { detectVisual: visualFallback });
+        let geminiPageBoxes = [];
         let gemini = null;
         if (useGemini) {
           setProgressValue("Gemini ตรวจทาน " + pairLabel, completed, total);
           try {
-            gemini = await reviewDocumentDifference({
+            gemini = normalizeGeminiReview(await reviewDocumentDifference({
               leftCanvas: comparison.referenceCanvas,
               rightCanvas: comparison.comparisonCanvas,
               page: pairLabel,
               apiKey,
               textEvidence: buildPdfTextEvidence(textFindings),
-            });
+            }));
             const geminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
-            // Gemini boxes are semantic, so they take precedence for documents whose layouts differ.
-            if (geminiBoxes.length) {
-              cropBoxes = mergeBoxes(
-                geminiBoxes,
-                Math.max(6, Math.round(comparison.comparisonCanvas.width * 0.005)),
-                localBoxLimits(comparison.comparisonCanvas.width, comparison.comparisonCanvas.height),
-              );
-            }
+            geminiPageBoxes = mapCropBoxesToPage(geminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
           } catch (error) {
-            gemini = { error: error.message || "Gemini review failed." };
+            gemini = { error: cleanGeminiText(error.message) || "Gemini review failed." };
           }
         }
-        const visualBoxes = mapCropBoxesToPage(cropBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
-        const boxes = numberMarkerBoxes(combineMarkerBoxes(textBoxes, visualBoxes));
-        const imageBlob = boxes.length
-          ? await canvasToBlob(drawDifferenceMarkers(rightCanvas, boxes))
-          : null;
+        const visualBoxes = visualFallback
+          ? mapCropBoxesToPage(comparison.boxes, rightRegion, rightCanvas, comparison.comparisonCanvas)
+          : [];
+        const detectorBoxes = useGemini
+          ? geminiPageBoxes
+          : textAvailable
+            ? textBoxes
+            : visualBoxes;
+        const boxes = numberMarkerBoxes(detectorBoxes);
+        const markerDrawing = boxes.length ? drawDifferenceMarkers(rightCanvas, boxes) : null;
+        const [imageBlob, annotationBlob] = markerDrawing
+          ? await Promise.all([
+            canvasToBlob(markerDrawing.previewCanvas),
+            canvasToBlob(markerDrawing.overlayCanvas),
+          ])
+          : [null, null];
         rows.push({
           id: pagePairKey(pair),
           leftPage: pair.leftPage,
           rightPage: pair.rightPage,
           boxes,
           imageBlob,
+          annotation: markerDrawing ? {
+            overlayBlob: annotationBlob,
+            documentWidth: rightCanvas.width,
+            documentHeight: rightCanvas.height,
+            gutterWidth: markerDrawing.gutterWidth,
+          } : null,
           gemini,
           visualComparable: comparison.visualComparable,
+          comparisonSource: useGemini ? "gemini" : textAvailable ? "text" : "visual",
           textFindings,
-          markerFindings: boxes.map((box) => ({
-            number: box.markerNumber,
-            kind: box.markerKind || "visual",
-            description: box.markerDescription || box.label || "พบความต่างจากภาพเอกสาร",
-          })),
+          markerFindings: useGemini
+            ? buildGeminiMarkerFindings(boxes, gemini)
+            : boxes.map((box) => ({
+              number: box.markerNumber,
+              kind: box.markerKind || "visual",
+              description: box.markerDescription || box.label || "พบความต่างจากภาพเอกสาร",
+            })),
         });
         state.results = rows;
         renderResults();
@@ -720,7 +736,7 @@ export function createDocumentCompare(root) {
       }
       if (comparisonToken === state.compareToken) {
         const changedPages = rows.filter((row) => row.boxes.length).length;
-        const needsSemanticReview = !useGemini && rows.some((row) => !row.visualComparable);
+        const needsSemanticReview = !useGemini && rows.some((row) => row.comparisonSource === "visual" && row.visualComparable === false);
         setProgressDone(
           changedPages
             ? "พบจุดต่าง " + changedPages + " คู่"
@@ -765,12 +781,14 @@ export function createDocumentCompare(root) {
     els.pageCount.textContent = state.results.length;
     els.changedPageCount.textContent = changedRows.length;
     els.differenceCount.textContent = state.results.reduce((sum, row) => sum + row.boxes.length, 0);
-    els.downloadPanel.hidden = !changedRows.length;
+    els.downloadPanel.hidden = !state.results.length;
     if (!state.results.length) return;
     els.resultBody.innerHTML = state.results.map((row) => {
       const detailText = row.gemini?.error
         ? "ตรวจไม่สำเร็จ"
-        : row.gemini?.summary || row.textFindings?.[0]?.description || (!row.visualComparable ? "โครงสร้างต่างกัน" : (els.useGemini.checked && row.boxes.length ? "กำลังตรวจ" : "-"));
+        : row.gemini?.summary
+          || row.textFindings?.[0]?.description
+          || (row.comparisonSource === "text" ? "ไม่พบข้อมูลต่างจาก text layer" : (!row.visualComparable ? "โครงสร้างต่างกัน" : "-"));
       return `
         <tr data-result-id="${row.id}" class="${state.selectedResultId === row.id ? "selected" : ""}">
           <td>ต้นฉบับ ${row.leftPage} / ฉบับ ${row.rightPage}</td>
@@ -793,7 +811,7 @@ export function createDocumentCompare(root) {
       els.previewImage.hidden = true;
       els.previewEmpty.hidden = false;
       els.previewEmpty.textContent = "ไม่พบจุดต่างในคู่หน้านี้";
-      els.downloadCurrent.disabled = true;
+      els.downloadCurrent.disabled = false;
       return;
     }
     state.previewUrl = URL.createObjectURL(row.imageBlob);
@@ -803,26 +821,71 @@ export function createDocumentCompare(root) {
     els.downloadCurrent.disabled = false;
   }
 
-  async function downloadAllDifferences() {
-    const rows = state.results.filter((row) => row.imageBlob);
+  async function downloadComparedPdf() {
+    const rows = state.results;
     if (!rows.length) return;
-    els.downloadZip.disabled = true;
+    els.downloadPdf.disabled = true;
     try {
-      const zip = new JSZip();
-      rows.forEach((row) => {
-        zip.file(differenceFilename(row), row.imageBlob);
-      });
-      zip.file("comparison-summary.csv", buildSummaryCsv(state.results));
-      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-      triggerDownload(blob, "document-differences.zip");
+      const pdfBytes = await buildComparisonPdf(rows);
+      triggerDownload(new Blob([pdfBytes], { type: "application/pdf" }), "document-comparison.pdf");
+    } catch (error) {
+      setProgressIdle(error.message || "สร้าง PDF ที่เปรียบเทียบแล้วไม่สำเร็จ");
     } finally {
-      els.downloadZip.disabled = false;
+      els.downloadPdf.disabled = false;
     }
   }
 
-  function downloadCurrentDifference() {
+  async function downloadCurrentComparisonPdf() {
     const row = state.results.find((result) => result.id === state.selectedResultId);
-    if (row?.imageBlob) triggerDownload(row.imageBlob, differenceFilename(row));
+    if (!row) return;
+    els.downloadCurrent.disabled = true;
+    try {
+      const pdfBytes = await buildComparisonPdf([row]);
+      triggerDownload(new Blob([pdfBytes], { type: "application/pdf" }), comparisonPdfFilename(row));
+    } catch (error) {
+      setProgressIdle(error.message || "สร้าง PDF หน้านี้ไม่สำเร็จ");
+    } finally {
+      els.downloadCurrent.disabled = false;
+    }
+  }
+
+  async function buildComparisonPdf(rows) {
+    if (!state.rightFile) throw new Error("ไม่พบไฟล์ฉบับเปรียบเทียบ");
+    const { PDFDocument } = await import("pdf-lib");
+    const outputPdf = await PDFDocument.create();
+    if (isPdf(state.rightFile)) {
+      const sourcePdf = await PDFDocument.load(await state.rightFile.arrayBuffer(), { ignoreEncryption: true });
+      for (const row of rows) {
+        if (row.rightPage < 1 || row.rightPage > sourcePdf.getPageCount()) continue;
+        const [copiedPage] = await outputPdf.copyPages(sourcePdf, [row.rightPage - 1]);
+        const page = outputPdf.addPage(copiedPage);
+        await drawPdfAnnotationOverlay(outputPdf, page, row.annotation);
+      }
+    } else {
+      const sourceCanvas = await renderImageFile(state.rightFile);
+      const sourceBlob = await canvasToBlob(sourceCanvas);
+      const sourceImage = await outputPdf.embedPng(await sourceBlob.arrayBuffer());
+      for (const row of rows) {
+        const annotation = row.annotation;
+        const gutterRatio = annotation ? annotation.gutterWidth / annotation.documentWidth : 0;
+        const page = outputPdf.addPage([sourceImage.width * (1 + gutterRatio), sourceImage.height]);
+        page.drawImage(sourceImage, { x: 0, y: 0, width: sourceImage.width, height: sourceImage.height });
+        await drawPdfAnnotationOverlay(outputPdf, page, annotation, sourceImage.width, sourceImage.height);
+      }
+    }
+    outputPdf.setTitle("Document comparison");
+    outputPdf.setSubject("Annotated document comparison");
+    return outputPdf.save();
+  }
+
+  async function drawPdfAnnotationOverlay(pdf, page, annotation, sourceWidth = page.getWidth(), sourceHeight = page.getHeight()) {
+    if (!annotation?.overlayBlob) return;
+    const gutterRatio = annotation.gutterWidth / annotation.documentWidth;
+    const pageHeight = page.getHeight();
+    const expandedWidth = sourceWidth * (1 + gutterRatio);
+    if (page.getWidth() !== expandedWidth || pageHeight !== sourceHeight) page.setSize(expandedWidth, sourceHeight);
+    const overlay = await pdf.embedPng(await annotation.overlayBlob.arrayBuffer());
+    page.drawImage(overlay, { x: 0, y: 0, width: expandedWidth, height: sourceHeight });
   }
 
   function updateButtons() {
@@ -1165,38 +1228,8 @@ function mapCropBoxesToPage(boxes, region, pageCanvas, cropCanvas) {
   });
 }
 
-function combineMarkerBoxes(textBoxes, visualBoxes) {
-  const combined = [];
-  [...textBoxes, ...visualBoxes].forEach((box) => {
-    const duplicateIndex = combined.findIndex((existing) => markerBoxesDescribeSameArea(existing, box));
-    if (duplicateIndex < 0) {
-      combined.push(box);
-      return;
-    }
-    if (box.label && !combined[duplicateIndex].label) combined[duplicateIndex] = box;
-  });
-  return combined;
-}
-
 function numberMarkerBoxes(boxes) {
   return boxes.map((box, index) => ({ ...box, markerNumber: index + 1 }));
-}
-
-function markerBoxesDescribeSameArea(first, second) {
-  const intersectionLeft = Math.max(first.x, second.x);
-  const intersectionTop = Math.max(first.y, second.y);
-  const intersectionRight = Math.min(first.x + first.width, second.x + second.width);
-  const intersectionBottom = Math.min(first.y + first.height, second.y + second.height);
-  const intersection = Math.max(0, intersectionRight - intersectionLeft) * Math.max(0, intersectionBottom - intersectionTop);
-  const firstArea = first.width * first.height;
-  const secondArea = second.width * second.height;
-  if (intersection / Math.max(1, Math.min(firstArea, secondArea)) >= 0.45) return true;
-  const firstCenterX = first.x + (first.width / 2);
-  const firstCenterY = first.y + (first.height / 2);
-  const secondCenterX = second.x + (second.width / 2);
-  const secondCenterY = second.y + (second.height / 2);
-  return Math.abs(firstCenterX - secondCenterX) <= Math.max(first.width, second.width) * 0.55
-    && Math.abs(firstCenterY - secondCenterY) <= Math.max(first.height, second.height) * 0.75;
 }
 
 function normalizedBoxToCanvas(box, canvas, metadata = {}) {
@@ -1269,8 +1302,11 @@ async function renderImageFile(file, maxRenderEdge = MAX_RENDER_EDGE) {
   return canvas;
 }
 
-function comparePageCanvases(leftCanvas, rightCanvas) {
+function comparePageCanvases(leftCanvas, rightCanvas, { detectVisual = true } = {}) {
   const { referenceCanvas, comparisonCanvas } = normalizePair(leftCanvas, rightCanvas);
+  if (!detectVisual) {
+    return { referenceCanvas, comparisonCanvas, boxes: [], visualComparable: null };
+  }
   const offset = findBestTranslation(comparisonCanvas, referenceCanvas);
   const alignedReference = translateCanvas(referenceCanvas, offset.x, offset.y);
   const visualComparable = offset.score <= MAX_VISUAL_ALIGNMENT_MISMATCH;
@@ -1278,9 +1314,81 @@ function comparePageCanvases(leftCanvas, rightCanvas) {
   return { referenceCanvas: alignedReference, comparisonCanvas, boxes, visualComparable };
 }
 
+function normalizeGeminiReview(review) {
+  const source = review && typeof review === "object" ? review : {};
+  const changes = Array.isArray(source.changes)
+    ? source.changes.map((change) => normalizeGeminiChange(change)).filter(Boolean)
+    : [];
+  const summary = cleanGeminiText(source.summary) || (changes.length ? `Gemini พบจุดต่าง ${changes.length} จุด` : "Gemini ไม่พบจุดต่างที่ยืนยันได้");
+  return { ...source, summary, changes };
+}
+
+function buildGeminiMarkerFindings(boxes, review) {
+  const markedChangeIndexes = new Set(boxes
+    .map((box) => box.geminiChangeIndex)
+    .filter((index) => Number.isInteger(index)));
+  const marked = boxes.map((box) => ({
+    number: box.markerNumber,
+    kind: "gemini",
+    description: box.markerDescription || box.label || "Gemini พบจุดต่างในบริเวณนี้",
+  }));
+  const unlocated = (review?.changes || [])
+    .map((change, index) => ({ change, index }))
+    .filter(({ index }) => !markedChangeIndexes.has(index))
+    .map(({ change }) => ({
+      number: "?",
+      kind: "gemini",
+      description: change.description || "Gemini พบจุดต่าง แต่ไม่ยืนยันตำแหน่งบนหน้าได้",
+    }));
+  return [...marked, ...unlocated];
+}
+
+function normalizeGeminiChange(change) {
+  if (!change || typeof change !== "object") return null;
+  const referenceText = cleanGeminiText(change.referenceText);
+  const comparisonText = cleanGeminiText(change.comparisonText);
+  const description = cleanGeminiText(change.description)
+    || cleanGeminiText(change.summary)
+    || describeGeminiChange(referenceText, comparisonText);
+  return {
+    ...change,
+    location: cleanGeminiText(change.location),
+    description,
+    referenceText,
+    comparisonText,
+  };
+}
+
+function describeGeminiChange(referenceText, comparisonText) {
+  if (referenceText && comparisonText) return `เปลี่ยนจาก ${referenceText} เป็น ${comparisonText}`;
+  if (referenceText) return `ต้นฉบับมี ${referenceText} แต่ฉบับเปรียบเทียบไม่มี`;
+  if (comparisonText) return `ฉบับเปรียบเทียบมี ${comparisonText} แต่ต้นฉบับไม่มี`;
+  return "Gemini พบจุดต่างในบริเวณนี้";
+}
+
+function cleanGeminiText(value) {
+  let text = String(value ?? "").trim();
+  if (!text) return "";
+  text = text.replace(/\\n/g, "\n").replace(/\\"/g, '"');
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  if (text.startsWith("{") && text.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(text);
+      return cleanGeminiText(parsed.summary || parsed.description || "");
+    } catch {
+      return "";
+    }
+  }
+  return text
+    .replace(/^\s*["']?(?:summary|description|location|referenceText|comparisonText)["']?\s*:\s*/i, "")
+    .replace(/^\s*["']|["']\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function geminiReviewBoxes(review, width, height) {
   if (!Array.isArray(review?.changes)) return [];
-  return review.changes.map((change) => {
+  return review.changes.map((change, index) => {
     const box = change?.box || change?.bounds;
     if (!box) return null;
     const x = Number(box.x);
@@ -1306,6 +1414,7 @@ function geminiReviewBoxes(review, width, height) {
       label: description || "Gemini พบจุดต่าง",
       markerKind: "gemini",
       markerDescription: description || "Gemini พบจุดต่างในบริเวณนี้",
+      geminiChangeIndex: index,
     };
   }).filter(Boolean);
 }
@@ -1603,12 +1712,25 @@ function clamp(value, minimum, maximum) {
 }
 
 function drawDifferenceMarkers(canvas, boxes) {
-  const result = cloneCanvas(canvas);
-  const context = result.getContext("2d");
-  const lineWidth = Math.max(2, Math.round(Math.min(result.width, result.height) * 0.0026));
-  const padding = Math.max(10, Math.round(Math.min(result.width, result.height) * 0.012));
-  const badgeSize = clamp(Math.round(Math.min(result.width, result.height) * 0.026), 20, 32);
+  const gutterWidth = clamp(Math.round(canvas.width * 0.44), 360, 560);
+  const overlayCanvas = document.createElement("canvas");
+  overlayCanvas.width = canvas.width + gutterWidth;
+  overlayCanvas.height = canvas.height;
+  const context = overlayCanvas.getContext("2d");
+  const lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) * 0.0026));
+  const padding = Math.max(10, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
+  const badgeSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.026), 20, 32);
   const occupiedBadgeRects = [];
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(canvas.width, 0, gutterWidth, canvas.height);
+  context.strokeStyle = "#d9d9d9";
+  context.lineWidth = Math.max(1, Math.round(lineWidth * 0.5));
+  context.beginPath();
+  context.moveTo(canvas.width + 0.5, 0);
+  context.lineTo(canvas.width + 0.5, canvas.height);
+  context.stroke();
+
   context.strokeStyle = "#dc2626";
   context.lineWidth = lineWidth;
   context.lineJoin = "round";
@@ -1618,9 +1740,131 @@ function drawDifferenceMarkers(canvas, boxes) {
     context.beginPath();
     context.ellipse(box.x + (box.width / 2), box.y + (box.height / 2), radiusX, radiusY, 0, 0, Math.PI * 2);
     context.stroke();
-    drawMarkerBadge(context, result, box, radiusX, radiusY, box.markerNumber || index + 1, badgeSize, occupiedBadgeRects);
+    drawMarkerBadge(context, canvas, box, radiusX, radiusY, box.markerNumber || index + 1, badgeSize, occupiedBadgeRects);
   });
-  return result;
+  drawMarkerCalloutRail(context, canvas, boxes, gutterWidth);
+
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = overlayCanvas.width;
+  previewCanvas.height = overlayCanvas.height;
+  const previewContext = previewCanvas.getContext("2d", { alpha: false });
+  previewContext.fillStyle = "#ffffff";
+  previewContext.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+  previewContext.drawImage(canvas, 0, 0);
+  previewContext.drawImage(overlayCanvas, 0, 0);
+  return { previewCanvas, overlayCanvas, gutterWidth };
+}
+
+function drawMarkerCalloutRail(context, documentCanvas, boxes, gutterWidth) {
+  const documentWidth = documentCanvas.width;
+  const fontSize = clamp(Math.round(Math.min(documentCanvas.width, documentCanvas.height) * 0.022), 23, 34);
+  const railPadding = Math.round(fontSize * 0.7);
+  const titleHeight = Math.round(fontSize * 2.1);
+  const lineHeight = Math.round(fontSize * 1.28);
+  const cardWidth = gutterWidth - (railPadding * 2);
+  context.save();
+  context.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
+  context.fillStyle = "#1f2937";
+  context.textBaseline = "middle";
+  context.fillText("จุดต่าง", documentWidth + railPadding, titleHeight * 0.55);
+
+  const cards = boxes.map((box, index) => {
+    const number = box.markerNumber || index + 1;
+    const text = String(box.markerDescription || box.label || "พบความต่างจากเอกสาร").replace(/\s+/g, " ").trim();
+    const lines = wrapCanvasText(context, text, cardWidth - (fontSize * 2.35), 3);
+    const cardHeight = Math.max(fontSize * 2.05, (lines.length * lineHeight) + (fontSize * 0.9));
+    return {
+      number,
+      lines,
+      height: Math.round(cardHeight),
+      desiredY: (box.y + (box.height / 2)) - (cardHeight / 2),
+    };
+  }).sort((first, second) => first.desiredY - second.desiredY || first.number - second.number);
+
+  const topLimit = titleHeight + railPadding;
+  const bottomLimit = documentCanvas.height - railPadding;
+  const gap = Math.max(8, Math.round(fontSize * 0.34));
+  let cursor = topLimit;
+  cards.forEach((card) => {
+    card.y = Math.max(card.desiredY, cursor);
+    cursor = card.y + card.height + gap;
+  });
+  if (cursor - gap > bottomLimit) {
+    let bottom = bottomLimit;
+    [...cards].reverse().forEach((card) => {
+      card.y = Math.min(card.y, bottom - card.height);
+      bottom = card.y - gap;
+    });
+  }
+
+  cards.forEach((card) => drawMarkerCalloutCard(context, documentWidth + railPadding, card.y, cardWidth, card, fontSize, lineHeight));
+  context.restore();
+}
+
+function drawMarkerCalloutCard(context, x, y, width, card, fontSize, lineHeight) {
+  const radius = Math.max(6, Math.round(fontSize * 0.3));
+  const badgeSize = Math.round(fontSize * 1.15);
+  const inset = Math.round(fontSize * 0.45);
+  context.fillStyle = "#fff7f7";
+  context.strokeStyle = "#fecaca";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.roundRect(x, y, width, card.height, radius);
+  context.fill();
+  context.stroke();
+
+  const badgeX = x + inset + (badgeSize / 2);
+  const badgeY = y + inset + (badgeSize / 2);
+  context.fillStyle = "#dc2626";
+  context.beginPath();
+  context.arc(badgeX, badgeY, badgeSize / 2, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#ffffff";
+  context.font = `700 ${Math.max(12, Math.round(fontSize * 0.53))}px Inter, Arial, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(String(card.number), badgeX, badgeY + 0.5);
+
+  context.fillStyle = "#991b1b";
+  context.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  const textX = x + (badgeSize * 1.55) + inset;
+  const textY = y + inset;
+  card.lines.forEach((line, index) => context.fillText(line, textX, textY + (index * lineHeight)));
+}
+
+function wrapCanvasText(context, value, maximumWidth, maximumLines) {
+  const text = String(value || "").trim();
+  if (!text) return ["พบความต่างจากเอกสาร"];
+  const segments = typeof Intl?.Segmenter === "function"
+    ? [...new Intl.Segmenter("th", { granularity: "word" }).segment(text)].map((part) => part.segment)
+    : Array.from(text);
+  const lines = [];
+  let line = "";
+  for (const segment of segments) {
+    const candidate = line + segment;
+    if (line && context.measureText(candidate).width > maximumWidth) {
+      lines.push(line.trimEnd());
+      line = segment.trimStart();
+      if (lines.length >= maximumLines) break;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line && lines.length < maximumLines) lines.push(line.trimEnd());
+  if (!lines.length) return [text];
+  if (lines.length === maximumLines && context.measureText(lines.at(-1)).width > maximumWidth) {
+    lines[lines.length - 1] = truncateCanvasText(context, lines.at(-1), maximumWidth);
+  }
+  return lines;
+}
+
+function truncateCanvasText(context, value, maximumWidth) {
+  if (context.measureText(value).width <= maximumWidth) return value;
+  const characters = Array.from(String(value || ""));
+  while (characters.length > 1 && context.measureText(`${characters.join("")}...`).width > maximumWidth) characters.pop();
+  return `${characters.join("")}...`;
 }
 
 function drawMarkerBadge(context, canvas, box, radiusX, radiusY, number, badgeSize, occupiedRects) {
@@ -1695,26 +1939,10 @@ function canvasToBlob(canvas) {
   });
 }
 
-function buildSummaryCsv(rows) {
-  const header = ["reference_page", "comparison_page", "difference_count", "text_differences", "gemini_summary"];
-  const data = rows.map((row) => [
-    row.leftPage,
-    row.rightPage,
-    row.boxes.length,
-    (row.textFindings || []).map((finding) => finding.description).join(" | "),
-    row.gemini?.summary || row.gemini?.error || "",
-  ]);
-  return [header, ...data].map((line) => line.map(csvCell).join(",")).join("\n");
-}
-
-function differenceFilename(row) {
+function comparisonPdfFilename(row) {
   const leftPage = String(row.leftPage).padStart(3, "0");
   const rightPage = String(row.rightPage).padStart(3, "0");
-  return "difference_reference_" + leftPage + "_comparison_" + rightPage + ".png";
-}
-
-function csvCell(value) {
-  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+  return "comparison_reference_" + leftPage + "_comparison_" + rightPage + ".pdf";
 }
 
 function triggerDownload(blob, filename) {

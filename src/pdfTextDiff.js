@@ -1,12 +1,21 @@
 const MAX_RUNS = 180;
 const MAX_FINDINGS = 12;
 const MAX_TEXT_LENGTH = 280;
+const TABLE_FIELDS = ["material", "description", "price", "total"];
+const TABLE_FIELD_LABELS = {
+  material: "รหัสสินค้า",
+  description: "รายละเอียดสินค้า",
+  quantity: "จำนวน",
+  unit: "หน่วย",
+  price: "ราคาต่อหน่วย",
+  total: "ราคารวม",
+};
 
 export function createPdfTextPage(textContent, viewport) {
   const pageWidth = Math.max(1, Number(viewport?.width) || 1);
   const pageHeight = Math.max(1, Number(viewport?.height) || 1);
   const items = (textContent?.items || []).map((item, index) => {
-    const text = String(item?.str || "").replaceAll("\u0000", "").trim();
+    const text = cleanPdfText(item?.str);
     const transform = item?.transform || [];
     const x = Number(transform[4]) || 0;
     const baseline = Number(transform[5]) || 0;
@@ -20,6 +29,7 @@ export function createPdfTextPage(textContent, viewport) {
       id: index,
       text,
       normalized: normalizeText(text),
+      reliable: isReliablePdfText(text),
       x: clamp(x / pageWidth, 0, 1),
       y: clamp((pageHeight - baseline - rawHeight) / pageHeight, 0, 1),
       width: clamp(rawWidth / pageWidth, 0, 1),
@@ -29,11 +39,18 @@ export function createPdfTextPage(textContent, viewport) {
   return { items };
 }
 
+export function hasUsablePdfText(leftPage, rightPage, leftRegion, rightRegion) {
+  return hasReliableTextInRegion(leftPage, leftRegion)
+    && hasReliableTextInRegion(rightPage, rightRegion);
+}
+
 export function findPdfTextDifferences(leftPage, rightPage, leftRegion, rightRegion) {
   if (!leftPage?.items?.length || !rightPage?.items?.length) return [];
-  const leftItems = leftPage.items.filter((item) => intersectsRegion(item, leftRegion));
-  const rightItems = rightPage.items.filter((item) => intersectsRegion(item, rightRegion));
+  const leftItems = usablePdfTextItems(leftPage, leftRegion);
+  const rightItems = usablePdfTextItems(rightPage, rightRegion);
   if (!leftItems.length || !rightItems.length) return [];
+  const tableFindings = findLineItemTableDifferences(leftItems, rightItems);
+  if (tableFindings.length) return tableFindings;
   const documentText = {
     reference: leftItems.map((item) => item.normalized).join(""),
     comparison: rightItems.map((item) => item.normalized).join(""),
@@ -76,6 +93,293 @@ export function findPdfTextDifferences(leftPage, rightPage, leftRegion, rightReg
     }
   }
   return findings.sort((first, second) => second.confidence - first.confidence);
+}
+
+function usablePdfTextItems(page, region) {
+  return (page?.items || []).filter((item) => item.reliable && intersectsRegion(item, region));
+}
+
+function hasReliableTextInRegion(page, region) {
+  const regionItems = (page?.items || []).filter((item) => intersectsRegion(item, region));
+  const readableItems = regionItems.filter((item) => item.reliable);
+  if (readableItems.length < 6) return false;
+
+  // A PDF can expose numbers and Latin fragments while its Thai text is mojibake.
+  // In that case, use image comparison rather than making a partial text layer authoritative.
+  const meaningfulItems = regionItems.filter((item) => hasMeaningfulText(item.text));
+  const readableMeaningful = readableItems.filter((item) => hasMeaningfulText(item.text));
+  return !meaningfulItems.length || readableMeaningful.length / meaningfulItems.length >= 0.72;
+}
+
+function findLineItemTableDifferences(leftItems, rightItems) {
+  const referenceTable = parseLineItemTable(leftItems);
+  const comparisonTable = parseLineItemTable(rightItems);
+  if (!referenceTable || !comparisonTable) return [];
+
+  const comparisonRows = new Map(comparisonTable.rows.map((row) => [row.id, row]));
+  const matchedRows = referenceTable.rows
+    .map((referenceRow) => ({ referenceRow, comparisonRow: comparisonRows.get(referenceRow.id) }))
+    .filter((pair) => pair.comparisonRow);
+  if (matchedRows.length < 2) return [];
+
+  const findings = [];
+  matchedRows.forEach(({ referenceRow, comparisonRow }) => {
+    TABLE_FIELDS.forEach((field) => {
+      const reference = referenceRow.fields[field];
+      const comparison = comparisonRow.fields[field];
+      if (!reference?.text || !comparison?.text || tableFieldValuesMatch(field, reference.text, comparison.text)) return;
+      findings.push({
+        kind: "changed",
+        referenceText: reference.text,
+        comparisonText: comparison.text,
+        comparisonBox: comparison.box,
+        confidence: 0.96,
+        description: describeTableFieldDifference(referenceRow.id, field, reference.text, comparison.text),
+        label: `รายการ ${referenceRow.id}: ${TABLE_FIELD_LABELS[field]}`,
+      });
+    });
+  });
+  return findings;
+}
+
+function parseLineItemTable(items) {
+  const header = findLineItemHeader(items);
+  if (!header) return null;
+  const anchors = findLineItemAnchors(items, header);
+  if (anchors.length < 2) return null;
+  const rows = anchors.map((anchor, index) => buildLineItemRow(
+    items,
+    header,
+    anchor,
+    anchors[index + 1],
+  )).filter((row) => Object.values(row.fields).some((field) => field?.text));
+  return rows.length >= 2 ? { rows } : null;
+}
+
+function findLineItemHeader(items) {
+  const rows = groupTextRows(items);
+  let best = null;
+  rows.forEach((row) => {
+    const columns = {};
+    row.items.forEach((item) => {
+      const field = tableHeaderField(item.text);
+      if (!field || columns[field]) return;
+      columns[field] = { x: item.x, width: item.width };
+    });
+    if (!columns.item) return;
+    const fields = Object.keys(columns);
+    const hasBusinessColumns = Boolean(columns.material || columns.description);
+    const hasValueColumns = Boolean(columns.price || columns.total || columns.quantity);
+    if (fields.length < 4 || !hasBusinessColumns || !hasValueColumns) return;
+    const score = fields.length + (columns.description ? 2 : 0) + (columns.price ? 1 : 0) + (columns.total ? 1 : 0);
+    if (!best || score > best.score) best = { y: row.y, height: row.height, columns, score };
+  });
+  if (!best) return null;
+
+  const anchors = Object.entries(best.columns)
+    .map(([field, value]) => ({ field, x: value.x }))
+    .sort((first, second) => first.x - second.x);
+  const columns = {};
+  anchors.forEach((anchor, index) => {
+    columns[anchor.field] = {
+      start: Math.max(0, anchor.x - 0.012),
+      end: index < anchors.length - 1 ? Math.max(anchor.x + 0.012, anchors[index + 1].x - 0.006) : 1,
+    };
+  });
+  return { y: best.y, height: best.height, columns };
+}
+
+function tableHeaderField(value) {
+  const text = normalizeText(value).replace(/[^\p{L}\p{N}]/gu, "");
+  if (text.includes("ITEM")) return "item";
+  if (text.includes("MATERIAL") || text === "PRODUCT" || text.includes("PRODUCTCODE")) return "material";
+  if (text.includes("DESCRIPTION") || text.includes("DETAIL")) return "description";
+  if (text.includes("QUANTITY") || text === "QTY") return "quantity";
+  if (text.includes("UNIT")) return "unit";
+  if (text.includes("PRICE") || text.includes("UNITPRICE")) return "price";
+  if (text.includes("SUBTOTAL") || text === "TOTAL" || text.includes("AMOUNT")) return "total";
+  return null;
+}
+
+function findLineItemAnchors(items, header) {
+  const candidateRows = groupTextRows(items.filter((item) => item.y > header.y + Math.max(header.height * 0.5, 0.004)));
+  const candidates = candidateRows.map((row) => {
+    const item = row.items.find((entry) => itemIsInColumn(entry, header.columns.item) && isLineItemNumber(entry.text));
+    return item ? { id: Number(item.text.trim()), y: row.y } : null;
+  }).filter(Boolean);
+
+  const anchors = [];
+  let expected = 1;
+  for (const candidate of candidates) {
+    if (candidate.id < expected) continue;
+    if (candidate.id !== expected) {
+      if (anchors.length) break;
+      continue;
+    }
+    anchors.push(candidate);
+    expected += 1;
+  }
+  return anchors;
+}
+
+function buildLineItemRow(items, header, anchor, nextAnchor) {
+  const bottom = nextAnchor
+    ? nextAnchor.y - 0.002
+    : anchor.y + Math.max(0.042, header.height * 4.2);
+  const rowItems = items.filter((item) => item.y >= anchor.y - 0.003 && item.y < bottom);
+  const fields = {};
+  const materialItem = findMaterialItem(rowItems, header, anchor);
+  if (materialItem) fields.material = fieldFromItems([materialItem]);
+
+  const descriptionItems = findDescriptionItems(rowItems, header, materialItem);
+  if (descriptionItems.length) {
+    fields.description = fieldFromItems(descriptionItems, true);
+  }
+
+  ["price", "total"].forEach((field) => {
+    const column = header.columns[field];
+    if (!column) return;
+    const fieldItems = rowItems
+      .filter((item) => itemIsInColumn(item, column))
+      .sort((first, second) => first.y - second.y || first.x - second.x);
+    if (!fieldItems.length) return;
+    fields[field] = fieldFromItems(fieldItems);
+  });
+  return { id: anchor.id, fields };
+}
+
+function findMaterialItem(items, header, anchor) {
+  const contentEnd = Math.min(
+    header.columns.quantity?.start ?? 1,
+    header.columns.price?.start ?? 1,
+    header.columns.total?.start ?? 1,
+  );
+  return items
+    .filter((item) => item.y <= anchor.y + Math.max(0.016, header.height * 1.8))
+    .filter((item) => !itemIsInColumn(item, header.columns.item))
+    .filter((item) => item.x < contentEnd)
+    .filter((item) => isMaterialCode(item.text))
+    .sort((first, second) => first.x - second.x || first.y - second.y)[0] || null;
+}
+
+function findDescriptionItems(items, header, materialItem) {
+  if (!materialItem) return [];
+  const contentEnd = Math.min(
+    header.columns.quantity?.start ?? 1,
+    header.columns.price?.start ?? 1,
+    header.columns.total?.start ?? 1,
+  );
+  const materialEnd = materialItem.x + materialItem.width;
+  return items
+    .filter((item) => item !== materialItem)
+    .filter((item) => item.x + item.width * 0.3 >= materialEnd - 0.003)
+    .filter((item) => item.x < contentEnd)
+    .filter((item) => !itemIsInColumn(item, header.columns.item))
+    .filter((item) => !isStandaloneCounter(item.text))
+    .sort((first, second) => first.y - second.y || first.x - second.x);
+}
+
+function fieldFromItems(items, isDescription = false) {
+  const rawText = items.map((item) => item.text).join(" ").replace(/\s+/g, " ").trim();
+  return {
+    text: isDescription ? cleanDescriptionText(rawText) : rawText,
+    box: unionBoxes(items),
+  };
+}
+
+function isMaterialCode(value) {
+  const text = normalizeText(value);
+  if (text.length < 5 || !/\d/.test(text)) return false;
+  if (/^\d{1,3}(?:[,.]\d{3})*(?:\.\d{2})?$/.test(text)) return false;
+  return /^[\p{L}\p{N}][\p{L}\p{N}#&/._-]*$/u.test(text);
+}
+
+function isStandaloneCounter(value) {
+  return /^\(?\d{1,3}\)?$/.test(String(value || "").trim());
+}
+
+function cleanDescriptionText(value) {
+  return String(value || "")
+    .replace(/\([^)]{0,64}\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function groupTextRows(items) {
+  const rows = [];
+  [...items]
+    .sort((first, second) => first.y - second.y || first.x - second.x)
+    .forEach((item) => {
+      const current = rows.at(-1);
+      const tolerance = Math.max(0.011, Math.max(item.height, current?.height || 0) * 0.8);
+      if (!current || Math.abs(item.y - current.y) > tolerance) {
+        rows.push({ y: item.y, height: item.height, items: [item] });
+        return;
+      }
+      current.items.push(item);
+      current.height = Math.max(current.height, item.height);
+    });
+  return rows;
+}
+
+function itemIsInColumn(item, column) {
+  if (!column) return false;
+  const center = item.x + (item.width / 2);
+  return center >= column.start && center < column.end;
+}
+
+function isLineItemNumber(value) {
+  const number = String(value || "").trim();
+  return /^\d{1,3}$/.test(number) && Number(number) > 0;
+}
+
+function tableFieldValuesMatch(field, referenceText, comparisonText) {
+  const reference = comparableText(referenceText);
+  const comparison = comparableText(comparisonText);
+  if (reference === comparison) return true;
+  if (field !== "description") return false;
+  const shorter = reference.length <= comparison.length ? reference : comparison;
+  const longer = reference.length > comparison.length ? reference : comparison;
+  return shorter.length >= 10 && longer.includes(shorter);
+}
+
+function describeTableFieldDifference(itemNumber, field, referenceText, comparisonText) {
+  const prefix = `รายการ ${itemNumber}: `;
+  if (field === "description") return prefix + describeDescriptionDifference(referenceText, comparisonText);
+  const label = TABLE_FIELD_LABELS[field] || "ข้อมูล";
+  return `${prefix}${label}เปลี่ยนจาก ${shortValue(referenceText)} เป็น ${shortValue(comparisonText)}`;
+}
+
+function describeDescriptionDifference(referenceText, comparisonText) {
+  const edits = characterEdits(normalizeText(referenceText), normalizeText(comparisonText));
+  const deleted = selectUsefulEditFragment(edits, "delete");
+  const inserted = selectUsefulEditFragment(edits, "insert");
+  if (deleted && (!inserted || deleted.score <= inserted.score)) {
+    return `รายละเอียดสินค้า: ต้นฉบับมี ${deleted.value} แต่ฉบับเปรียบเทียบไม่มี`;
+  }
+  if (inserted) return `รายละเอียดสินค้า: ฉบับเปรียบเทียบมี ${inserted.value} แต่ต้นฉบับไม่มี`;
+  return `รายละเอียดสินค้าเปลี่ยนจาก ${shortValue(referenceText)} เป็น ${shortValue(comparisonText)}`;
+}
+
+function selectUsefulEditFragment(edits, type) {
+  const candidates = edits
+    .filter((edit) => edit.type === type && isMeaningfulDifference(edit.value))
+    .filter((edit) => comparableText(edit.value).length >= 3)
+    .map((edit) => ({
+      value: edit.value,
+      score: edit.value.length
+        - (/\d/.test(edit.value) ? 14 : 0)
+        - (/[\/#&,_-]/.test(edit.value) ? 8 : 0)
+        + (/^[\p{Script=Thai}]+$/u.test(edit.value) ? 12 : 0),
+    }))
+    .filter((edit) => edit.value.length <= 72)
+    .sort((first, second) => first.score - second.score || first.value.length - second.value.length);
+  return candidates[0] || null;
+}
+
+function shortValue(value, maximum = 68) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length <= maximum ? text : `${text.slice(0, maximum - 3)}...`;
 }
 
 export function buildPdfTextEvidence(findings) {
@@ -323,12 +627,35 @@ function intersectsRegion(item, region) {
 }
 
 function normalizeText(value) {
-  return String(value || "")
+  return cleanPdfText(value)
     .normalize("NFKC")
-    .replaceAll("\u0000", "")
     .replace(/[‐‑–—]/g, "-")
     .replace(/\s+/g, "")
     .toUpperCase();
+}
+
+function cleanPdfText(value) {
+  return String(value || "")
+    .normalize("NFC")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim();
+}
+
+function isReliablePdfText(value) {
+  const text = String(value || "");
+  if (!text || text.includes("\uFFFD")) return false;
+  return !looksLikeMojibake(text);
+}
+
+function hasMeaningfulText(value) {
+  return /[\p{L}\p{N}]/u.test(String(value || ""));
+}
+
+function looksLikeMojibake(value) {
+  const text = String(value || "");
+  const markers = text.match(/(?:Ã.|Â.|Ð.|Ñ.|à¸|à¹|àº)/g) || [];
+  return markers.length >= 2 || /(?:Ã.|Â.|Ð.|Ñ.|à¸|à¹|àº)/.test(text);
 }
 
 function isComparableText(value) {

@@ -8,6 +8,11 @@ __pycache__
 *.csv
 *.xlsx
 *.pyc
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.py
 model
 scripts
 countedvalues.txt

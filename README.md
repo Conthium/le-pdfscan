@@ -3,11 +3,11 @@
 LE PDF Scan has two independent document workflows:
 
 - **Priority scan**: sends a PDF to the existing Python/OpenCV service, then sorts pages by the selected marker colour.
-- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, pairs the selected pages in page order, lets users select a separate comparison area on each pair, detects character-level changes from a PDF text layer when available, circles the related field in red, and exports the changed-page images as a ZIP.
+- **Document compare**: compares a left reference file with a right revised file directly in the browser. It accepts PDF, PNG, JPG, and WEBP, lets users select page thumbnails independently for each file, lets users select a separate comparison area on each pair, detects character-level changes from a PDF text layer when available, circles the related field in red with a numbered marker linked to a readable finding list, and exports the changed-page images as a ZIP.
 
 The two workflows do not share files, jobs, or detector state. A problem with one cannot change the behaviour of the other.
 
-For document compare page selection, click thumbnails to toggle pages, use Shift-click to select a contiguous range, or enter a range such as `1,5-8`. The two sides can use different page numbers; the application pairs their selected pages in ascending page order.
+For document compare page selection, click thumbnails to toggle pages, use Shift-click to select a contiguous range, or enter a range such as `1,5-8`. All pages are selected by default. When only one page is selected on one side, it is compared against every selected page on the other side. Otherwise, the shorter page selection is distributed in document order across the longer selection so every selected page is compared.
 
 ## Gemini scan
 

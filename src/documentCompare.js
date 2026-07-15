@@ -68,8 +68,7 @@ export function createDocumentCompare(root) {
               <span>Gemini scan</span>
             </label>
             <label class="gemini-key-field">
-              <span>Gemini API key</span>
-              <input id="compareGeminiKey" type="password" autocomplete="off" placeholder="Vercel environment เมื่อเว้นว่าง" />
+              <input id="compareGeminiKey" type="password" autocomplete="off" aria-label="Gemini API key" placeholder="Gemini API key (Vercel เมื่อเว้นว่าง)" />
             </label>
           </div>
           <div class="compare-primary-actions">
@@ -164,7 +163,7 @@ export function createDocumentCompare(root) {
         </div>
       </section>
 
-      <section class="result-panel compare-results" id="compareResults">
+      <section class="result-panel compare-results" id="compareResults" hidden>
         <div class="result-header">
           <div>
             <p class="eyebrow">Document compare</p>
@@ -188,13 +187,15 @@ export function createDocumentCompare(root) {
               <div><p class="eyebrow">Preview</p><h3 id="comparePreviewTitle">ภาพผลลัพธ์</h3></div>
               <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลดภาพหน้านี้" disabled><i data-lucide="download"></i></button>
             </div>
-            <div class="text-difference-panel" id="compareTextDifferencePanel" hidden>
-              <p class="eyebrow">Text differences</p>
-              <ul id="compareTextDifferenceList"></ul>
-            </div>
-            <div class="preview-canvas-wrap">
-              <img id="comparePreviewImage" alt="ภาพเอกสารที่วงจุดต่างสีแดง" hidden />
-              <div id="comparePreviewEmpty" class="preview-empty">เลือกหน้าที่พบจุดต่างเพื่อดูภาพ</div>
+            <div class="compare-preview-content">
+              <div class="text-difference-panel" id="compareTextDifferencePanel" hidden>
+                <p class="eyebrow">จุดต่างที่ตรวจพบ</p>
+                <ul id="compareTextDifferenceList"></ul>
+              </div>
+              <div class="preview-canvas-wrap">
+                <img id="comparePreviewImage" alt="ภาพเอกสารที่วงจุดต่างสีแดง" hidden />
+                <div id="comparePreviewEmpty" class="preview-empty">เลือกหน้าที่พบจุดต่างเพื่อดูภาพ</div>
+              </div>
             </div>
           </div>
         </div>
@@ -488,8 +489,18 @@ export function createDocumentCompare(root) {
   function getPagePairs() {
     const leftPages = getSelectedPages("left");
     const rightPages = getSelectedPages("right");
-    const count = Math.min(leftPages.length, rightPages.length);
-    return Array.from({ length: count }, (_, index) => ({ leftPage: leftPages[index], rightPage: rightPages[index] }));
+    const count = Math.max(leftPages.length, rightPages.length);
+    if (!count || !leftPages.length || !rightPages.length) return [];
+    return Array.from({ length: count }, (_, index) => ({
+      leftPage: pageForPair(leftPages, index, count),
+      rightPage: pageForPair(rightPages, index, count),
+    }));
+  }
+
+  function pageForPair(pages, index, pairCount) {
+    if (pages.length === 1 || pairCount === 1) return pages[0];
+    const position = index / (pairCount - 1);
+    return pages[Math.round(position * (pages.length - 1))];
   }
 
   function getActivePair() {
@@ -582,13 +593,13 @@ export function createDocumentCompare(root) {
   function updatePageRange() {
     const sharedPages = getSharedPageCount();
     if (!sharedPages) return;
-    state.pageSelection.left = new Set(pageNumbers(sharedPages));
-    state.pageSelection.right = new Set(pageNumbers(sharedPages));
+    state.pageSelection.left = new Set(pageNumbers(state.leftSource.pageCount));
+    state.pageSelection.right = new Set(pageNumbers(state.rightSource.pageCount));
     state.pageSelectionAnchors.left = null;
     state.pageSelectionAnchors.right = null;
     state.roiPairIndex = 0;
     rebuildPagePicker();
-    setProgressIdle("พร้อมเทียบ " + sharedPages + " คู่หน้า");
+    setProgressIdle("พร้อมเทียบ " + getPagePairs().length + " คู่หน้า");
     void renderRoiPreviews();
   }
 
@@ -649,7 +660,11 @@ export function createDocumentCompare(root) {
         const leftRegion = getRoi(pair.leftPage, "left");
         const rightRegion = getRoi(pair.rightPage, "right");
         const textFindings = findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion);
-        const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, { label: finding.label }));
+        const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, {
+          label: finding.label,
+          markerKind: finding.kind,
+          markerDescription: finding.description,
+        }));
         const leftArea = cropCanvas(leftCanvas, leftRegion);
         const rightArea = cropCanvas(rightCanvas, rightRegion);
         const comparison = comparePageCanvases(leftArea, rightArea);
@@ -679,7 +694,7 @@ export function createDocumentCompare(root) {
           }
         }
         const visualBoxes = mapCropBoxesToPage(cropBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
-        const boxes = combineMarkerBoxes(textBoxes, visualBoxes);
+        const boxes = numberMarkerBoxes(combineMarkerBoxes(textBoxes, visualBoxes));
         const imageBlob = boxes.length
           ? await canvasToBlob(drawDifferenceMarkers(rightCanvas, boxes))
           : null;
@@ -692,6 +707,11 @@ export function createDocumentCompare(root) {
           gemini,
           visualComparable: comparison.visualComparable,
           textFindings,
+          markerFindings: boxes.map((box) => ({
+            number: box.markerNumber,
+            kind: box.markerKind || "visual",
+            description: box.markerDescription || box.label || "พบความต่างจากภาพเอกสาร",
+          })),
         });
         state.results = rows;
         renderResults();
@@ -766,7 +786,7 @@ export function createDocumentCompare(root) {
     if (!row) return;
     state.selectedResultId = resultId;
     renderResults();
-    renderTextFindings(row.textFindings);
+    renderTextFindings(row.markerFindings);
     revokePreviewUrl();
     els.previewTitle.textContent = "ต้นฉบับ " + row.leftPage + " / ฉบับ " + row.rightPage;
     if (!row.imageBlob) {
@@ -867,8 +887,12 @@ export function createDocumentCompare(root) {
       return;
     }
     els.textDifferencePanel.hidden = false;
-    els.textDifferenceList.innerHTML = findings.slice(0, 8).map((finding) => `
-      <li><span class="text-difference-kind">${escapeHtml(textFindingKind(finding.kind))}</span><span>${escapeHtml(finding.description)}</span></li>
+    els.textDifferenceList.innerHTML = findings.map((finding) => `
+      <li>
+        <span class="marker-number">${escapeHtml(finding.number)}</span>
+        <span class="text-difference-kind">${escapeHtml(textFindingKind(finding.kind))}</span>
+        <span class="text-difference-description">${escapeHtml(finding.description)}</span>
+      </li>
     `).join("");
   }
 
@@ -1137,7 +1161,7 @@ function mapCropBoxesToPage(boxes, region, pageCanvas, cropCanvas) {
     const top = clamp(Math.round(rect.y + (box.y * scaleY)), rect.y, rect.y + rect.height - 1);
     const right = clamp(Math.round(rect.x + ((box.x + box.width) * scaleX)), left + 1, rect.x + rect.width);
     const bottom = clamp(Math.round(rect.y + ((box.y + box.height) * scaleY)), top + 1, rect.y + rect.height);
-    return { x: left, y: top, width: right - left, height: bottom - top };
+    return { ...box, x: left, y: top, width: right - left, height: bottom - top };
   });
 }
 
@@ -1152,6 +1176,10 @@ function combineMarkerBoxes(textBoxes, visualBoxes) {
     if (box.label && !combined[duplicateIndex].label) combined[duplicateIndex] = box;
   });
   return combined;
+}
+
+function numberMarkerBoxes(boxes) {
+  return boxes.map((box, index) => ({ ...box, markerNumber: index + 1 }));
 }
 
 function markerBoxesDescribeSameArea(first, second) {
@@ -1269,7 +1297,16 @@ function geminiReviewBoxes(review, width, height) {
       || right - left > width * 0.82
       || bottom - top > height * 0.72
     ) return null;
-    return { x: left, y: top, width: right - left, height: bottom - top };
+    const description = String(change.description || "").trim();
+    return {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
+      label: description || "Gemini พบจุดต่าง",
+      markerKind: "gemini",
+      markerDescription: description || "Gemini พบจุดต่างในบริเวณนี้",
+    };
   }).filter(Boolean);
 }
 
@@ -1570,51 +1607,72 @@ function drawDifferenceMarkers(canvas, boxes) {
   const context = result.getContext("2d");
   const lineWidth = Math.max(2, Math.round(Math.min(result.width, result.height) * 0.0026));
   const padding = Math.max(10, Math.round(Math.min(result.width, result.height) * 0.012));
+  const badgeSize = clamp(Math.round(Math.min(result.width, result.height) * 0.026), 20, 32);
+  const occupiedBadgeRects = [];
   context.strokeStyle = "#dc2626";
   context.lineWidth = lineWidth;
   context.lineJoin = "round";
-  boxes.forEach((box) => {
+  boxes.forEach((box, index) => {
     const radiusX = Math.max(16, (box.width / 2) + padding);
     const radiusY = Math.max(16, (box.height / 2) + padding);
     context.beginPath();
     context.ellipse(box.x + (box.width / 2), box.y + (box.height / 2), radiusX, radiusY, 0, 0, Math.PI * 2);
     context.stroke();
-    if (box.label) drawMarkerLabel(context, result, box, radiusY, String(box.label));
+    drawMarkerBadge(context, result, box, radiusX, radiusY, box.markerNumber || index + 1, badgeSize, occupiedBadgeRects);
   });
   return result;
 }
 
-function drawMarkerLabel(context, canvas, box, radiusY, label) {
-  const fontSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.012), 12, 18);
-  const horizontalPadding = Math.round(fontSize * 0.62);
-  const verticalPadding = Math.round(fontSize * 0.42);
+function drawMarkerBadge(context, canvas, box, radiusX, radiusY, number, badgeSize, occupiedRects) {
+  const placement = findMarkerBadgePlacement(canvas, box, radiusX, radiusY, badgeSize, occupiedRects);
+  const fontSize = Math.max(11, Math.round(badgeSize * 0.52));
   context.save();
-  context.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
-  const text = truncateCanvasText(context, label, canvas.width * 0.42);
-  const textWidth = context.measureText(text).width;
-  const labelWidth = Math.min(canvas.width - 8, textWidth + (horizontalPadding * 2));
-  const labelHeight = fontSize + (verticalPadding * 2);
-  const x = clamp(box.x + (box.width / 2) - (labelWidth / 2), 4, canvas.width - labelWidth - 4);
-  let y = box.y - radiusY - labelHeight - 5;
-  if (y < 4) y = Math.min(canvas.height - labelHeight - 4, box.y + radiusY + 5);
-  context.fillStyle = "rgba(255, 255, 255, 0.96)";
-  context.strokeStyle = "#dc2626";
-  context.lineWidth = 1;
+  context.fillStyle = "#dc2626";
   context.beginPath();
-  context.roundRect(x, y, labelWidth, labelHeight, Math.max(3, Math.round(fontSize * 0.3)));
+  context.arc(placement.x, placement.y, badgeSize / 2, 0, Math.PI * 2);
   context.fill();
-  context.stroke();
-  context.fillStyle = "#b91c1c";
+  context.fillStyle = "#ffffff";
+  context.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
+  context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(text, x + horizontalPadding, y + (labelHeight / 2));
+  context.fillText(String(number), placement.x, placement.y + 0.5);
   context.restore();
 }
 
-function truncateCanvasText(context, value, maximumWidth) {
-  if (context.measureText(value).width <= maximumWidth) return value;
-  let text = value;
-  while (text.length > 1 && context.measureText(`${text}...`).width > maximumWidth) text = text.slice(0, -1);
-  return `${text}...`;
+function findMarkerBadgePlacement(canvas, box, radiusX, radiusY, badgeSize, occupiedRects) {
+  const centerX = box.x + (box.width / 2);
+  const centerY = box.y + (box.height / 2);
+  const halfBadge = badgeSize / 2;
+  const inset = halfBadge + 4;
+  const candidates = [];
+  for (let ring = 0; ring < 9; ring += 1) {
+    const offset = (ring * (badgeSize + 5)) + halfBadge + 4;
+    candidates.push(
+      { x: centerX + radiusX + offset, y: centerY - radiusY - offset },
+      { x: centerX - radiusX - offset, y: centerY - radiusY - offset },
+      { x: centerX + radiusX + offset, y: centerY + radiusY + offset },
+      { x: centerX - radiusX - offset, y: centerY + radiusY + offset },
+    );
+  }
+  for (const candidate of candidates) {
+    const x = clamp(candidate.x, inset, canvas.width - inset);
+    const y = clamp(candidate.y, inset, canvas.height - inset);
+    const rect = { x: x - halfBadge, y: y - halfBadge, width: badgeSize, height: badgeSize };
+    if (!occupiedRects.some((occupied) => rectanglesOverlap(rect, occupied, 4))) {
+      occupiedRects.push(rect);
+      return { x, y };
+    }
+  }
+  const fallback = { x: clamp(centerX + radiusX + halfBadge, inset, canvas.width - inset), y: clamp(centerY - radiusY - halfBadge, inset, canvas.height - inset) };
+  occupiedRects.push({ x: fallback.x - halfBadge, y: fallback.y - halfBadge, width: badgeSize, height: badgeSize });
+  return fallback;
+}
+
+function rectanglesOverlap(first, second, padding = 0) {
+  return first.x - padding < second.x + second.width
+    && first.x + first.width + padding > second.x
+    && first.y - padding < second.y + second.height
+    && first.y + first.height + padding > second.y;
 }
 
 function cloneCanvas(source) {
@@ -1690,5 +1748,7 @@ function escapeHtml(value) {
 function textFindingKind(kind) {
   if (kind === "missing_from_comparison") return "หาย";
   if (kind === "missing_from_reference") return "เพิ่ม";
+  if (kind === "visual") return "ภาพ";
+  if (kind === "gemini") return "Gemini";
   return "แก้ไข";
 }

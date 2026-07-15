@@ -1,6 +1,7 @@
 import { createIcons, icons } from "lucide";
 
-const DEFAULT_API_URL = import.meta.env.VITE_SCANNER_API_URL || "http://127.0.0.1:8000";
+const DEFAULT_API_URL = import.meta.env.VITE_SCANNER_API_URL
+  || (isLocalHost() ? "http://127.0.0.1:8000" : "");
 
 export function createPriorityScanner(root) {
   const state = {
@@ -155,7 +156,7 @@ export function createPriorityScanner(root) {
     updateButtons();
 
     try {
-      const apiBase = normalizeApiUrl(DEFAULT_API_URL);
+      const apiBase = getScannerApiUrl();
       const info = await fetchPdfInfo(apiBase, file);
       state.pageCount = info.total_pages;
       els.startPage.value = "1";
@@ -218,7 +219,7 @@ export function createPriorityScanner(root) {
       form.append("scale", "0");
       form.append("priority_color", els.priorityColor.value);
 
-      const apiBase = normalizeApiUrl(DEFAULT_API_URL);
+      const apiBase = getScannerApiUrl();
       setProgressValue("กำลังส่งไฟล์ไป scanner", 0, pageTotal);
       const response = await fetch(`${apiBase}/api/scan-job`, { method: "POST", body: form });
       const queued = await response.json().catch(() => ({}));
@@ -329,8 +330,16 @@ function isPdf(file) {
   return file?.type === "application/pdf" || file?.name?.toLowerCase().endsWith(".pdf");
 }
 
-function normalizeApiUrl(value) {
-  return String(value || DEFAULT_API_URL).trim().replace(/\/+$/, "");
+function getScannerApiUrl() {
+  const apiUrl = String(DEFAULT_API_URL || "").trim().replace(/\/+$/, "");
+  if (!apiUrl) {
+    throw new Error("ยังไม่ได้ตั้งค่า Scanner API สำหรับ deployment นี้");
+  }
+  return apiUrl;
+}
+
+function isLocalHost() {
+  return ["127.0.0.1", "localhost", "::1"].includes(window.location.hostname);
 }
 
 async function fetchPdfInfo(apiBase, file) {

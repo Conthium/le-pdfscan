@@ -20,3 +20,5 @@ __pycache__/
 !model/detector_count_estimator_metrics.json
 !model/priority_color_profiles.json
 !.vscode/
+
+.vercel

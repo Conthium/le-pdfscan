@@ -1,0 +1,16 @@
+node_modules
+dist
+tmp
+output
+outputs
+__pycache__
+*.pdf
+*.csv
+*.xlsx
+*.pyc
+model
+scripts
+countedvalues.txt
+server_scanner.py
+requirements.txt
+render.yaml

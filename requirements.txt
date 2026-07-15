@@ -1,0 +1,10 @@
+pypdfium2
+pypdf
+numpy
+opencv-python-headless
+pillow
+fastapi
+uvicorn[standard]
+python-multipart
+scikit-learn
+joblib

@@ -1,0 +1,69 @@
+{
+  "kind": "detector_estimator_metadata",
+  "trained_pdf": "รายงานตรวจวัดสภาพแวดล้อมในการทำงาน สำนัก.pdf",
+  "truth_file": "countedvalues.txt",
+  "detector_version": "red-source-truth-detectors-2026-06-20",
+  "train_start_page": 1019,
+  "train_end_page": 1115,
+  "scale": 2.0,
+  "production_count_model": "detector_tree_ensemble_estimator",
+  "production_note": "Production uses detector-derived color, marker, text-anchor, component-filter, anchor-quality, color-purity, and scan-augmentation signals. It does not use page ids, source-truth lookups, or an exact answer table.",
+  "estimator": {
+    "kind": "detector_tree_ensemble_estimator",
+    "algorithm": "sklearn.ensemble.ExtraTreesRegressor",
+    "feature_count": 141,
+    "training_rows": 1261,
+    "training_pages": 97,
+    "augmentations": [
+      "bright_high",
+      "bright_low",
+      "color_bleed",
+      "contrast_high",
+      "contrast_low",
+      "gamma_dark",
+      "gamma_light",
+      "jpeg_82",
+      "mild_noise",
+      "original",
+      "resample_soft",
+      "sharpen",
+      "soft_blur"
+    ],
+    "source_truth_fit_original": {
+      "pages": 97,
+      "mae": 0.0515,
+      "rmse": 0.227,
+      "max_error": 1,
+      "exact_pages": 92,
+      "within_5_percent_pages": 97,
+      "within_5_marks_pages": 97,
+      "total_actual": 2113,
+      "total_predicted": 2112,
+      "total_error_pct": -0.0473,
+      "pairwise_rank_agreement_pct": 99.9463
+    },
+    "holdout_5_fold_original_grouped_by_page": {
+      "pages": 97,
+      "mae": 5.299,
+      "rmse": 12.0155,
+      "max_error": 86,
+      "exact_pages": 34,
+      "within_5_percent_pages": 52,
+      "within_5_marks_pages": 70,
+      "total_actual": 2113,
+      "total_predicted": 2069,
+      "total_error_pct": -2.0823,
+      "pairwise_rank_agreement_pct": 94.5679
+    },
+    "robustness_stress_original_range": {
+      "original_within_5_percent_pages": 97,
+      "gamma_dark_within_5_percent_pages": 78,
+      "gamma_light_within_5_percent_pages": 96,
+      "contrast_low_within_5_percent_pages": 95,
+      "contrast_high_within_5_percent_pages": 95,
+      "mild_noise_within_5_percent_pages": 96,
+      "sharpen_within_5_percent_pages": 96,
+      "color_bleed_within_5_percent_pages": 97
+    }
+  }
+}

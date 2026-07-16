@@ -1,5 +1,7 @@
 # LE PDF Scan
 
+[English](README.md) | [ภาษาไทย](README.th.md)
+
 LE PDF Scan is an internal document-review tool for comparing two PDF documents or images. The current web application is focused on **Document Compare**. It runs in the browser, can optionally ask Gemini to review business-content changes, and exports one annotated PDF for follow-up work.
 
 This README is written as a handoff guide. Read the **Current Status** section before changing code: the repository still contains a separate OpenCV Priority Count system, but that system is intentionally hidden from the current web UI.

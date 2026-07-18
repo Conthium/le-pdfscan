@@ -1404,6 +1404,7 @@ button.download-link {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
 .compare-setup-heading h2,
@@ -1412,11 +1413,15 @@ button.download-link {
 }
 
 .compare-drop-grid {
+  width: 100%;
+  min-width: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
 .drop-zone.compact {
+  width: 100%;
+  min-width: 0;
   min-height: 144px;
   padding: 16px;
 }
@@ -2226,6 +2231,12 @@ button.download-link {
     padding: 12px;
   }
 
+  .compare-setup-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .compare-drop-grid,
   .page-picker-grid,
   .roi-editor-grid {
@@ -2239,16 +2250,26 @@ button.download-link {
   }
 
   .compare-header-actions {
+    width: 100%;
     gap: 6px;
+    justify-content: stretch;
   }
 
   .compare-header-mode-control {
-    width: min(232px, calc(100vw - 128px));
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
   }
 
   .compare-header-mode-control .mode-button {
+    min-width: 0;
     padding: 0 5px;
     font-size: 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .compare-header-actions > .icon-button {
+    flex: 0 0 36px;
   }
 
   .compare-primary-actions {

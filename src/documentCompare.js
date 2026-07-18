@@ -17,9 +17,6 @@ const MIN_COMPONENT_PIXELS = 24;
 const FULL_REGION = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
 const MIN_REGION_SIZE = 0.025;
 const MAX_VISUAL_ALIGNMENT_MISMATCH = 0.065;
-const MIN_KEYBOARD_VIEWPORT_CHANGE = 120;
-const KEYBOARD_VIEWPORT_POLL_INTERVAL = 120;
-const PROMPT_VIEWPORT_RECOVERY_TIMEOUT = 1600;
 
 function isKnownDefaultComparePrompt(value) {
   const text = String(value || "").trim();
@@ -62,16 +59,6 @@ export function createDocumentCompare(root, options = {}) {
     roiDrag: null,
     roiEditing: { left: false, right: false },
     promptExpanded: false,
-    promptDockCollapsedHeight: 0,
-    promptCollapseTimer: null,
-    promptPageScrollLock: null,
-    promptViewportRecoveryPending: false,
-    promptViewportRecoveryTimer: null,
-    keyboardInset: 0,
-    keyboardViewportFrame: 0,
-    keyboardViewportTimer: null,
-    keyboardViewportBaselineHeight: 0,
-    keyboardViewportWidth: 0,
     scanMode: "focused",
     promptIsCustom: false,
     focusedPrompt: DEFAULT_GEMINI_PROMPT,
@@ -84,6 +71,7 @@ export function createDocumentCompare(root, options = {}) {
 
   root.innerHTML = `
     <section class="workspace compare-workspace">
+      <div class="compare-scroll-content">
       <section class="compare-setup">
         <div class="compare-setup-heading">
           <div>
@@ -254,6 +242,7 @@ export function createDocumentCompare(root, options = {}) {
           </div>
         </div>
       </section>
+      </div>
 
       <section class="compare-command-dock" id="compareCommandDock" aria-label="คำสั่งเปรียบเทียบเอกสาร">
         <div class="compare-command-dock-inner">
@@ -410,13 +399,6 @@ export function createDocumentCompare(root, options = {}) {
   bindRoiStage("right");
   document.addEventListener("visibilitychange", handleDocumentVisibility);
   window.addEventListener("focus", handleWindowFocus);
-  document.addEventListener("focusin", scheduleKeyboardViewportSync);
-  document.addEventListener("focusout", scheduleKeyboardViewportSync);
-  window.addEventListener("resize", scheduleKeyboardViewportSync);
-  window.addEventListener("orientationchange", scheduleKeyboardViewportSync);
-  window.addEventListener("pageshow", scheduleKeyboardViewportSync);
-  window.visualViewport?.addEventListener("resize", scheduleKeyboardViewportSync);
-  window.visualViewport?.addEventListener("scroll", scheduleKeyboardViewportSync);
   document.addEventListener("keydown", handlePreviewKeydown);
   els.resultBody.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-result-id]");
@@ -424,188 +406,22 @@ export function createDocumentCompare(root, options = {}) {
   });
   setScanMode(state.scanMode);
   updatePromptExpandUi();
-  scheduleKeyboardViewportSync();
   createIcons({ icons });
 
   function handleDocumentVisibility() {
     if (state.processing) updateProcessingUi();
     updateDocumentTitle();
-    scheduleKeyboardViewportSync();
   }
 
   function handleWindowFocus() {
     if (state.processing) updateProcessingUi();
     updateDocumentTitle();
-    scheduleKeyboardViewportSync();
   }
 
   function handlePreviewKeydown(event) {
     if (event.key !== "Escape" || !state.previewFullscreen) return;
     event.preventDefault();
     setPreviewFullscreen(false);
-  }
-
-  function scheduleKeyboardViewportSync() {
-    if (state.keyboardViewportFrame) return;
-    state.keyboardViewportFrame = window.requestAnimationFrame(() => {
-      state.keyboardViewportFrame = 0;
-      syncKeyboardViewport();
-    });
-  }
-
-  function syncKeyboardViewport() {
-    const dock = els.commandDock;
-    const viewport = window.visualViewport;
-    if (!dock) return;
-    if (!viewport) {
-      resetKeyboardViewport(dock);
-      finishPromptViewportRecovery();
-      return;
-    }
-
-    const viewportTop = Math.max(0, viewport.offsetTop);
-    const viewportBottom = viewport.height + viewportTop;
-    const layoutHeight = Math.max(
-      window.innerHeight || 0,
-      document.documentElement.clientHeight || 0,
-      viewportBottom,
-    );
-    const viewportWidth = Math.max(1, Math.round(viewport.width));
-    const widthChanged = state.keyboardViewportWidth
-      && Math.abs(viewportWidth - state.keyboardViewportWidth) > 48;
-    if (!state.keyboardViewportBaselineHeight || widthChanged) {
-      state.keyboardViewportBaselineHeight = layoutHeight;
-    }
-    state.keyboardViewportWidth = viewportWidth;
-
-    const rawInset = state.keyboardViewportBaselineHeight - viewportBottom;
-    const keyboardOpen = rawInset > MIN_KEYBOARD_VIEWPORT_CHANGE
-      && (isKeyboardInputActive() || state.keyboardInset > 0 || state.promptViewportRecoveryPending);
-    if (!keyboardOpen) {
-      state.keyboardViewportBaselineHeight = Math.max(
-        state.keyboardViewportBaselineHeight,
-        layoutHeight,
-        viewportBottom,
-      );
-      resetKeyboardViewport(dock);
-      finishPromptViewportRecovery();
-      return;
-    }
-
-    const keyboardInset = Math.round(Math.min(
-      state.keyboardViewportBaselineHeight,
-      Math.max(0, rawInset),
-    ));
-    state.keyboardInset = keyboardInset;
-    dock.style.setProperty("--compare-viewport-top", `${Math.round(viewportTop)}px`);
-    dock.style.setProperty("--compare-keyboard-inset", `${keyboardInset}px`);
-    dock.classList.add("keyboard-open");
-    scheduleKeyboardViewportMonitor();
-  }
-
-  function isKeyboardInputActive() {
-    const active = document.activeElement;
-    return Boolean(active?.isContentEditable || active?.matches?.(
-      'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select',
-    ));
-  }
-
-  function scheduleKeyboardViewportMonitor() {
-    if (state.keyboardViewportTimer) return;
-    state.keyboardViewportTimer = window.setTimeout(() => {
-      state.keyboardViewportTimer = null;
-      if (state.keyboardInset > 0 || state.promptViewportRecoveryPending) syncKeyboardViewport();
-    }, KEYBOARD_VIEWPORT_POLL_INTERVAL);
-  }
-
-  function resetKeyboardViewport(dock = els.commandDock) {
-    if (state.keyboardViewportTimer) {
-      window.clearTimeout(state.keyboardViewportTimer);
-      state.keyboardViewportTimer = null;
-    }
-    state.keyboardInset = 0;
-    dock?.classList.remove("keyboard-open");
-    dock?.style.removeProperty("--compare-keyboard-inset");
-    dock?.style.removeProperty("--compare-viewport-top");
-    dock?.style.removeProperty("--compare-viewport-height");
-    dock?.style.removeProperty("--compare-layout-height");
-  }
-
-  function lockPromptPageScroll() {
-    cancelPromptViewportRecovery();
-    if (state.promptPageScrollLock) return;
-
-    const body = document.body;
-    const scrollbarWidth = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
-    const currentPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
-    state.promptPageScrollLock = {
-      x: window.scrollX,
-      y: window.scrollY,
-      styles: {
-        position: body.style.position,
-        top: body.style.top,
-        right: body.style.right,
-        bottom: body.style.bottom,
-        left: body.style.left,
-        width: body.style.width,
-        overflow: body.style.overflow,
-        paddingRight: body.style.paddingRight,
-      },
-    };
-
-    body.style.position = "fixed";
-    body.style.top = `-${state.promptPageScrollLock.y}px`;
-    body.style.right = "0";
-    body.style.bottom = "auto";
-    body.style.left = "0";
-    body.style.width = "100%";
-    body.style.overflow = "hidden";
-    if (scrollbarWidth > 0) {
-      body.style.paddingRight = `${currentPaddingRight + scrollbarWidth}px`;
-    }
-  }
-
-  function beginPromptViewportRecovery() {
-    if (!state.promptPageScrollLock) return;
-    state.promptViewportRecoveryPending = true;
-    if (state.promptViewportRecoveryTimer) {
-      window.clearTimeout(state.promptViewportRecoveryTimer);
-    }
-    state.promptViewportRecoveryTimer = window.setTimeout(() => {
-      resetKeyboardViewport();
-      finishPromptViewportRecovery();
-    }, PROMPT_VIEWPORT_RECOVERY_TIMEOUT);
-    scheduleKeyboardViewportSync();
-    scheduleKeyboardViewportMonitor();
-  }
-
-  function cancelPromptViewportRecovery() {
-    state.promptViewportRecoveryPending = false;
-    if (!state.promptViewportRecoveryTimer) return;
-    window.clearTimeout(state.promptViewportRecoveryTimer);
-    state.promptViewportRecoveryTimer = null;
-  }
-
-  function finishPromptViewportRecovery() {
-    if (!state.promptViewportRecoveryPending || !state.promptPageScrollLock) return;
-
-    const lock = state.promptPageScrollLock;
-    const body = document.body;
-    const { styles } = lock;
-    cancelPromptViewportRecovery();
-    state.promptPageScrollLock = null;
-    body.style.position = styles.position;
-    body.style.top = styles.top;
-    body.style.right = styles.right;
-    body.style.bottom = styles.bottom;
-    body.style.left = styles.left;
-    body.style.width = styles.width;
-    body.style.overflow = styles.overflow;
-    body.style.paddingRight = styles.paddingRight;
-
-    const restoreScroll = () => window.scrollTo(lock.x, lock.y);
-    restoreScroll();
-    window.requestAnimationFrame(restoreScroll);
   }
 
   function bindFileZone(side) {
@@ -1386,46 +1202,12 @@ export function createDocumentCompare(root, options = {}) {
 
   function setPromptExpanded(expanded) {
     const next = Boolean(expanded) && !state.processing;
-    const previous = state.promptExpanded;
     const dock = els.commandDock;
-    if (!dock || next === previous) return;
-    if (state.promptCollapseTimer) {
-      window.clearTimeout(state.promptCollapseTimer);
-      state.promptCollapseTimer = null;
-    }
-    if (next) {
-      lockPromptPageScroll();
-      state.promptDockCollapsedHeight = dock.getBoundingClientRect().height;
-      state.promptExpanded = true;
-      dock.classList.remove("prompt-collapsing");
-      dock.style.setProperty("--prompt-dock-collapsed-height", `${Math.round(state.promptDockCollapsedHeight)}px`);
-      dock.classList.add("prompt-expanded");
-    } else {
-      if (document.activeElement === els.prompt) els.prompt.blur();
-      state.promptExpanded = false;
-      const collapsedHeight = Math.max(1, Math.round(state.promptDockCollapsedHeight || dock.getBoundingClientRect().height));
-      dock.style.setProperty("--prompt-dock-collapsed-height", `${collapsedHeight}px`);
-      dock.classList.add("prompt-collapsing");
-      void dock.offsetHeight;
-      dock.classList.remove("prompt-expanded");
-      state.promptCollapseTimer = window.setTimeout(() => {
-        dock.classList.remove("prompt-collapsing");
-        dock.style.removeProperty("--prompt-dock-collapsed-height");
-        state.promptCollapseTimer = null;
-      }, 280);
-      beginPromptViewportRecovery();
-    }
+    if (!dock || next === state.promptExpanded) return;
+    if (!next && document.activeElement === els.prompt) els.prompt.blur();
+    state.promptExpanded = next;
+    dock.classList.toggle("prompt-expanded", next);
     updatePromptExpandUi();
-    if (state.promptExpanded) {
-      window.requestAnimationFrame(() => {
-        try {
-          els.prompt.focus({ preventScroll: true });
-        } catch {
-          els.prompt.focus();
-        }
-        scheduleKeyboardViewportSync();
-      });
-    }
   }
 
   function updatePromptExpandUi() {

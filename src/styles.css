@@ -26,11 +26,13 @@ html,
 body,
 #app {
   min-width: 320px;
+  height: 100%;
   min-height: 100%;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
   color: var(--ink);
   background: #f5f5f5;
 }
@@ -43,13 +45,19 @@ select {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   padding: 16px;
   color: #171717;
 }
 
 .app-card {
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  height: 100%;
+  min-height: 0;
   max-width: 1280px;
   margin: 0 auto;
   overflow: hidden;
@@ -61,6 +69,7 @@ select {
 
 .topbar {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -844,6 +853,12 @@ td {
   display: none;
 }
 
+.mode-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .roi-panel {
   grid-area: editor;
   min-width: 0;
@@ -1506,10 +1521,27 @@ button.download-link {
 /* Document compare uses a page-first workflow: files, page pairs, area, then results. */
 .compare-workspace {
   display: grid;
+  height: 100%;
+  min-height: 0;
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas: none;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.compare-scroll-content {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-  padding: 24px 24px 208px;
+  padding: 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .compare-setup,
@@ -1602,146 +1634,23 @@ button.download-link {
 }
 
 .compare-command-dock {
-  position: fixed;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  left: max(12px, env(safe-area-inset-left));
+  position: relative;
   z-index: 20;
-  width: min(820px, calc(100% - 24px));
-  margin: 0 auto;
+  width: min(820px, calc(100% - 48px));
+  margin: 10px auto max(12px, env(safe-area-inset-bottom));
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.97);
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 14px 34px rgba(23, 37, 84, 0.16);
-  backdrop-filter: blur(12px);
   transition:
-    top 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    right 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    bottom 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    left 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
     padding 260ms ease,
-    border-radius 260ms ease,
     box-shadow 260ms ease;
 }
 
-.compare-command-dock.keyboard-open {
-  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
-}
-
-.compare-command-dock.prompt-expanded {
-  display: flex;
-  flex-direction: column;
-  top: 8px;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
-  width: auto;
-  margin: 0;
-  height: auto;
-  max-height: none;
-  padding: 16px;
-  border-radius: 8px;
-  overflow: hidden;
-  animation: prompt-dock-expand 260ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.compare-command-dock.prompt-expanded.keyboard-open {
-  top: calc(var(--compare-viewport-top, 0px) + 8px);
-  bottom: calc(8px + var(--compare-keyboard-inset, 0px));
-}
-
-.compare-command-dock.prompt-collapsing {
-  top: auto;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  left: max(12px, env(safe-area-inset-left));
-  width: min(820px, calc(100% - 24px));
-  margin: 0 auto;
-  height: var(--prompt-dock-collapsed-height);
-  max-height: var(--prompt-dock-collapsed-height);
-  border-radius: 10px;
-  animation: prompt-dock-collapse 280ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.compare-command-dock.prompt-collapsing.keyboard-open {
-  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
-}
-
-@keyframes prompt-dock-expand {
-  from {
-    height: var(--prompt-dock-collapsed-height);
-    opacity: 0.86;
-    transform: translateY(18px) scaleY(0.96);
-    transform-origin: bottom center;
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scaleY(1);
-    transform-origin: bottom center;
-  }
-}
-
-@keyframes prompt-dock-collapse {
-  from {
-    opacity: 1;
-    transform: translateY(0) scaleY(1);
-    transform-origin: bottom center;
-  }
-  to {
-    height: var(--prompt-dock-collapsed-height);
-    opacity: 0.98;
-    transform: translateY(0) scaleY(0.99);
-    transform-origin: bottom center;
-  }
-}
-
-.compare-command-dock.prompt-expanded .compare-command-dock-inner {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.compare-command-dock.prompt-expanded .compare-dock-command-row {
-  display: grid;
-  flex: 1;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  align-items: stretch;
-  min-height: 0;
-  gap: 12px;
-}
-
-.compare-command-dock.prompt-expanded .compare-prompt-field {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
 .compare-command-dock.prompt-expanded .compare-prompt-field textarea {
-  flex: 1;
-  min-height: 0;
-  max-height: none;
-  animation: prompt-field-expand 280ms ease both;
-}
-
-@keyframes prompt-field-expand {
-  from {
-    opacity: 0.92;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.compare-command-dock.prompt-expanded .compare-primary-actions {
-  display: flex;
-  justify-content: flex-end;
+  height: clamp(190px, 38dvh, 420px);
+  max-height: 420px;
 }
 
 .compare-command-dock-inner {
@@ -1860,6 +1769,7 @@ button.download-link {
 .compare-prompt-field textarea {
   display: block;
   width: 100%;
+  height: 80px;
   min-height: 80px;
   max-height: 168px;
   padding: 10px 12px;
@@ -1869,8 +1779,9 @@ button.download-link {
   border: 1px solid #d4d4d4;
   border-radius: 6px;
   font: inherit;
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1.55;
+  transition: height 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .compare-prompt-field textarea:focus {
@@ -2322,8 +2233,12 @@ button.download-link {
 }
 
 @media (max-width: 980px) {
-  .compare-workspace {
-    padding: 20px 20px 208px;
+  .compare-scroll-content {
+    padding: 20px;
+  }
+
+  .compare-command-dock {
+    width: min(820px, calc(100% - 40px));
   }
 
   .page-picker-document-header {
@@ -2363,9 +2278,9 @@ button.download-link {
 }
 
 @media (max-width: 640px) {
-  .compare-workspace {
+  .compare-scroll-content {
     gap: 12px;
-    padding: 16px 16px 216px;
+    padding: 16px;
   }
 
   .compare-setup {
@@ -2429,7 +2344,9 @@ button.download-link {
   }
 
   .compare-command-dock {
-    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    width: calc(100% - 32px);
+    margin: 8px auto max(8px, env(safe-area-inset-bottom));
+    padding: 8px 10px;
   }
 
   .compare-dock-command-row {
@@ -2445,6 +2362,11 @@ button.download-link {
     min-height: 72px;
     max-height: 120px;
     font-size: 16px;
+  }
+
+  .compare-command-dock.prompt-expanded .compare-prompt-field textarea {
+    height: clamp(170px, 32dvh, 280px);
+    max-height: 280px;
   }
 
   .compare-command-dock .compare-primary-actions {
@@ -2463,20 +2385,6 @@ button.download-link {
   .compare-command-dock .compare-primary-actions > .primary {
     min-width: 0;
     height: 44px;
-  }
-
-  .compare-command-dock.prompt-expanded .compare-primary-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .compare-command-dock.prompt-expanded .compare-primary-actions > .primary {
-    width: 100%;
-  }
-
-  .compare-command-dock.prompt-expanded {
-    padding-right: 10px;
-    padding-left: 10px;
   }
 
   .compare-command-dock .download-link {

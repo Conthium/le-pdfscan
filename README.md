@@ -10,8 +10,8 @@ This README is written as a handoff guide. Read the **Current Status** section b
 
 | Workstream | Status | Where it runs | Main code |
 | --- | --- | --- | --- |
-| Document Compare | Active in the web UI | Browser + optional Vercel serverless Gemini proxy | `src/documentCompare.js`, `src/pdfTextDiff.js`, `src/gemini.js` |
-| Gemini semantic review | Optional checkbox in Document Compare | Browser calls `/api/gemini` on Vercel, or a user-entered key in the current browser session | `src/gemini.js`, `api/gemini.js` |
+| Document Compare | Active in the web UI | Browser + direct Gemini API call using the user's saved key | `src/documentCompare.js`, `src/pdfTextDiff.js`, `src/gemini.js` |
+| Gemini semantic review | Required to compare documents | Browser calls Gemini directly with the key entered by that user; no server proxy or build-time key | `src/gemini.js` |
 | Priority Count / colored-marker scan | Paused and not shown in the UI | Separate Python/FastAPI service | `src/priorityScan.js`, `server_scanner.py`, `scripts/` |
 
 `src/main.js` imports only `createDocumentCompare(...)`. That is why the public page currently opens directly to Document Compare and no longer shows Priority Scan.
@@ -22,9 +22,10 @@ This README is written as a handoff guide. Read the **Current Status** section b
 
 1. Upload a **ต้นฉบับ** (reference) file on the left and an **ฉบับเปรียบเทียบ** (revised) file on the right. Supported inputs are PDF, PNG, JPG, and WEBP.
 2. Select the pages to compare. All pages are selected initially. Click thumbnails, Shift-click a range, or enter a range such as `1,5-8`.
-3. Set a comparison area for each document page if only part of a page matters. Each side has its own page picker, `< >` navigation, and eight crop handles. The copy button applies the current crop only to the selected pages of that same document.
-4. Optionally enable **Gemini scan** for semantic review of documents that use different templates or layouts.
-5. Review the list of differences and the annotated preview. Download **PDF ที่เปรียบเทียบแล้ว** to get one combined PDF containing the revised/right-hand pages in the selected comparison order.
+3. Set a comparison area for each document page if only part of a page matters. Each side has its own page picker, `< >` navigation, and eight crop handles. The copy button applies the current crop only to the selected pages of that same document. On touch devices, the preview starts in scroll mode: tap the Crop button on the relevant side before editing. The touch hit areas are larger than the visible handles, and the adjacent reset button stays disabled until a custom crop exists.
+4. Choose **เฉพาะสาระสำคัญ** to suppress harmless detail changes, or **ทั้งหมด** to review all confirmed content changes. Focused mode exposes an editable Thai policy prompt, and that user prompt becomes the primary scope. The all-content mode keeps its all-differences policy locked; the same field becomes optional document context used only to explain document roles, field mappings, terminology, units, or equivalent formats. The focused prompt and exhaustive context are stored separately and never overwrite each other.
+5. Click **Gemini** in the top-right header, enter an API key in the dialog, and save it. It is masked and stored in that browser's `localStorage`; the key is not written to the repository or sent to this app's server.
+6. Review the list of differences and the annotated preview. Click **ดาวน์โหลด** to get one combined PDF containing the revised/right-hand pages in the selected comparison order.
 
 ## How Document Compare Works
 
@@ -33,15 +34,13 @@ flowchart LR
   A["Left reference file"] --> C["PDF.js render and text extraction"]
   B["Right revised file"] --> C
   C --> D{"Reliable PDF text?"}
-  D -->|"Yes"| E["Text-first field and line comparison"]
-  D -->|"No"| F["Image comparison fallback"]
-  E --> G["Red circles and callouts"]
+  D -->|"Yes"| E["Full PDF text evidence with coordinates"]
+  D -->|"No"| F["Rendered page image evidence"]
+  E --> G["Gemini semantic review"]
   F --> G
-  C --> H{"Gemini scan enabled?"}
-  H -->|"Yes"| I["Gemini semantic review"]
-  I --> J["Ground markers to PDF text when possible"]
-  J --> G
-  G --> K["Annotated PDF export"]
+  G --> H["Ground markers to PDF text when possible"]
+  H --> I["Red circles and callouts"]
+  I --> J["Annotated PDF export"]
 ```
 
 ### 1. Open and render input files
@@ -67,35 +66,38 @@ The crop region is stored separately by side and page. A crop on `ต้นฉ�
 - Drag an empty area to create a crop.
 - Drag inside an existing crop to move it.
 - Use all eight handles: four corners and four edge midpoints.
+- On touch devices, scroll normally without starting a crop. Tap the Crop button to enter edit mode, then tap the same button again to finish.
+- The reset button next to Crop returns the active page to the full-page region and is disabled when no custom crop exists.
 - The dashed full-page region means no custom crop is applied.
 
 The crop is used for comparison only. It does not alter the source document or the final PDF page size.
 
 ### 4. Text-first comparison
 
-For PDFs with a reliable text layer, `src/pdfTextDiff.js` is the first source of truth for position and ordinary text differences.
+For PDFs with a reliable text layer, `src/pdfTextDiff.js` extracts the complete readable text in the selected area and sends it to Gemini with normalized coordinates. It is evidence, not a precomputed answer.
 
 The code:
 
-- checks that both cropped regions contain enough readable text;
-- treats garbled/invalid text as unreliable so Thai mojibake does not become authoritative;
-- detects common item-table fields such as material code, description, unit price, and subtotal;
-- falls back to line/block comparison when the document is not a recognized item table; and
-- keeps the exact normalized coordinates of the revised/right-hand text fragment.
+- keeps only readable text fragments and rejects obvious mojibake so broken Thai encoding does not become authoritative;
+- groups fragments into readable lines with stable normalized coordinates;
+- sends both sides' complete text evidence to Gemini without sending a locally guessed difference list; and
+- can locate Gemini's confirmed comparison text back on the revised/right-hand PDF for accurate circles.
 
 This is why text PDFs should be compared through their text layer instead of trying to infer individual characters from pixels.
 
 ### 5. Image fallback
 
-When reliable PDF text is not available and Gemini is not selected, the app compares rendered page images.
+When reliable PDF text is not available, the app still sends rendered page images to Gemini. The image is the primary evidence for scanned PDFs and image files.
 
-The fallback aligns the two cropped canvases, measures local pixel changes, filters broad structural noise such as table borders, and keeps small connected regions that look like real content changes. This is useful for scanned PDFs and image files, but it is less precise than a good PDF text layer.
+Gemini is instructed to ignore layout, scan skew, compression artifacts, and broad visual structure unless those visual elements are business content. The result remains semantic rather than a raw pixel-difference list.
 
 ### 6. Gemini scan
 
-Gemini is optional. It is intended for semantic comparison when two documents have different layouts but represent the same business content, for example a quotation versus a purchase order.
+Gemini is the primary semantic detector. It is intended for comparison when two documents have different layouts but represent the same business content, for example a quotation versus a purchase order.
 
-`src/gemini.js` sends the selected reference and revised areas to `gemini-3.1-flash-lite` together with candidate text differences when they are available. Gemini returns a clean Thai summary and a list of changes containing reference/revised values. It is asked for one small normalized box per changed field when it is confident.
+`src/gemini.js` sends the selected reference and revised areas to `gemini-3.1-flash-lite` together with complete extracted text evidence when available. In `focused` mode, the user-editable Thai prompt is the primary policy for what to inspect, include, ignore, and treat as material. In `exhaustive` mode, the application always sends the locked all-differences policy; optional user text is placed in a separate `USER DOCUMENT CONTEXT` block and may help match meaning but cannot narrow the scan or suppress evidence-backed changes. Fixed instructions still enforce evidence-only answers, document prompt-injection isolation, valid JSON, and grounded coordinates. Gemini returns a clean Thai summary and grouped changes containing reference/revised values.
+
+The normal path makes **one Gemini request per page pair**. Images, PDF text evidence, and bounded text candidates are assembled once, and the same request performs matching, materiality review, deduplication, and final self-review. A second request is made only as a malformed-JSON recovery retry. Gemini and network latency can still vary, but the application does not run hidden review passes during a successful comparison.
 
 Gemini decides **what changed**. Marker placement uses the most reliable location available:
 
@@ -169,8 +171,6 @@ To enable Priority Count in the future:
 ## Repository Map
 
 ```text
-api/
-  gemini.js                    Vercel serverless proxy for Gemini
 model/
   detector_count_estimator.joblib
   red_box_calibration_model.json
@@ -184,7 +184,7 @@ src/
   styles.css                  Shared UI styles
 server_scanner.py             Paused Priority Count FastAPI service
 render.yaml                   Render deployment template for the Python service
-vercel.json                   Vite build and Gemini function settings
+vercel.json                   Vite build and output settings
 ```
 
 ## Run Locally
@@ -230,20 +230,18 @@ npm run dev
 
 Vercel hosts:
 
-- the Vite frontend in `dist/`; and
-- `api/gemini.js` as the `/api/gemini` serverless endpoint.
+- the static Vite frontend in `dist/`.
 
 Vercel does **not** host the OpenCV/Python Priority Count service in the current design.
 
-`vercel.json` sets `npm run build`, publishes `dist`, and gives the Gemini function a 30-second maximum duration. Smaller selected areas reduce the size of the Gemini request and help keep requests within that limit.
+`vercel.json` sets `npm run build` and publishes `dist`. The browser calls Google's Gemini API directly after the user enters a key.
 
 ### Connect GitHub to Vercel
 
 1. In Vercel, choose **Add New -> Project**.
 2. Import the GitHub repository `Conthium/le-pdfscan`.
 3. Use the repository root as the project root. Vercel detects Vite from `package.json` and `vercel.json`.
-4. Add the environment variables below.
-5. Deploy. Future pushes to the connected branch create deployments automatically.
+4. Deploy. Future pushes to the connected branch create deployments automatically.
 
 The project can also be deployed manually from this folder:
 
@@ -252,30 +250,11 @@ vercel link
 vercel --prod
 ```
 
-### Gemini environment variables
+### Gemini key handling
 
-Use this server-side Vercel variable for the proxy:
+The user clicks the **Gemini** button in the top-right header and enters an API key in the settings dialog. The value is masked and stored only in that browser's `localStorage`, so it survives reloads for that user. It is sent directly to Google's API and is not included in the build, repository, Vercel environment, or application logs.
 
-```text
-GEMINI_API_KEY=your_gemini_api_key
-```
-
-Never commit an `.env` file or an API key. `.env` is ignored by Git.
-
-`VITE_GEMINI_API_KEY` is supported for temporary browser-side use, but Vite bundles every `VITE_*` variable into public JavaScript. **Do not set `VITE_GEMINI_API_KEY` for a public repository or public Vercel deployment.**
-
-The key field in the web UI is optional and is kept in browser `sessionStorage` for the current tab/session. When the field is empty, the app uses the Vercel `/api/gemini` proxy instead.
-
-### Important security note for a public deployment
-
-Keeping `GEMINI_API_KEY` in Vercel protects the key value from the source repository, but the current `/api/gemini` endpoint has no user authentication or rate limiting. If the deployed URL is open to everyone, visitors can consume the Gemini quota through that endpoint.
-
-Before adding a shared server key to a public-facing deployment, add one of these controls:
-
-- Vercel Deployment Protection or another access gate;
-- application login/authorization;
-- rate limiting and request-size limits; or
-- require each user to enter their own API key.
+Because this is a browser-side key, use a restricted key with API and referrer limits. A key pasted into chat, source code, screenshots, or a public deployment should be revoked and replaced.
 
 ## Public Repository Checklist
 
@@ -283,8 +262,7 @@ Before changing GitHub visibility to public, verify:
 
 - no API key, `.env`, customer PDF, exported PDF, CSV, or debug file is committed;
 - the repo does not contain proprietary client documents;
-- `GEMINI_API_KEY` exists only in Vercel Environment Variables, never in Git; and
-- `VITE_GEMINI_API_KEY` is unset for any public build.
+- no Gemini API key exists in source, `.env`, build output, or Git history.
 
 Useful checks:
 

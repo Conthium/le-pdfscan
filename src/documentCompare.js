@@ -1,8 +1,12 @@
 import { createIcons, icons } from "lucide";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorkerSource from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
-import { reviewDocumentDifference } from "./gemini.js";
-import { buildPdfTextEvidence, createPdfTextPage, findPdfTextDifferences, hasUsablePdfText } from "./pdfTextDiff.js";
+import {
+  DEFAULT_EXHAUSTIVE_GEMINI_PROMPT,
+  DEFAULT_GEMINI_PROMPT,
+  reviewDocumentDifference,
+} from "./gemini.js";
+import { buildPdfTextEvidence, createPdfTextPage, findPdfTextMatches } from "./pdfTextDiff.js";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerSource;
 
@@ -13,7 +17,22 @@ const FULL_REGION = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
 const MIN_REGION_SIZE = 0.025;
 const MAX_VISUAL_ALIGNMENT_MISMATCH = 0.065;
 
-export function createDocumentCompare(root) {
+function isKnownDefaultComparePrompt(value) {
+  const text = String(value || "").trim();
+  return !text
+    || text === DEFAULT_GEMINI_PROMPT
+    || text === DEFAULT_EXHAUSTIVE_GEMINI_PROMPT;
+}
+
+export function createDocumentCompare(root, options = {}) {
+  const geminiButton = options.geminiButton || null;
+  const geminiHeaderStatus = options.geminiHeaderStatus || null;
+  const geminiDialog = options.geminiDialog || null;
+  const geminiDialogKey = options.geminiDialogKey || null;
+  const geminiDialogClose = options.geminiDialogClose || null;
+  const geminiDialogCancel = options.geminiDialogCancel || null;
+  const geminiDialogClear = options.geminiDialogClear || null;
+  const geminiDialogSave = options.geminiDialogSave || null;
   const state = {
     leftSource: null,
     rightSource: null,
@@ -21,6 +40,7 @@ export function createDocumentCompare(root) {
     rightFile: null,
     loadingSides: { left: false, right: false },
     processing: false,
+    downloading: false,
     compareToken: 0,
     loadTokens: { left: 0, right: 0 },
     results: [],
@@ -34,6 +54,15 @@ export function createDocumentCompare(root) {
     roiRenderToken: 0,
     roiSelections: new Map(),
     roiDrag: null,
+    roiTouchEditing: { left: false, right: false },
+    promptExpanded: false,
+    promptDockCollapsedHeight: 0,
+    promptCollapseTimer: null,
+    scanMode: "focused",
+    promptIsCustom: false,
+    focusedPrompt: DEFAULT_GEMINI_PROMPT,
+    exhaustiveContext: "",
+    geminiKey: "",
   };
 
   root.innerHTML = `
@@ -60,26 +89,16 @@ export function createDocumentCompare(root) {
             <span class="drop-subtitle" id="compareRightMeta">PDF หรือภาพ</span>
           </label>
         </div>
-        <div class="compare-action-bar">
+        <div class="compare-action-bar" aria-label="การตั้งค่า Gemini และโหมดสแกน">
           <div class="compare-gemini-settings">
-            <label class="check-row">
-              <input id="compareUseGemini" type="checkbox" />
-              <span>Gemini scan</span>
-            </label>
-            <label class="gemini-key-field">
-              <input id="compareGeminiKey" type="password" autocomplete="off" aria-label="Gemini API key" placeholder="Gemini API key (Vercel เมื่อเว้นว่าง)" />
-            </label>
-          </div>
-          <div class="compare-primary-actions">
-            <button class="primary" id="compareRunButton" disabled><i data-lucide="scan-search"></i><span>เปรียบเทียบ</span></button>
-            <div class="download-panel" id="compareDownloadPanel" hidden>
-              <button class="download-link" id="compareDownloadPdf"><i data-lucide="file-down"></i><span>PDF ที่เปรียบเทียบแล้ว</span></button>
+            <div class="compare-mode-field">
+              <span class="compare-dock-label">โหมดสแกน</span>
+              <div class="compare-mode-control" role="group" aria-label="เลือกโหมดสแกน">
+                <button class="mode-button active" id="compareModeFocused" type="button" data-mode="focused">เฉพาะสาระสำคัญ</button>
+                <button class="mode-button" id="compareModeExhaustive" type="button" data-mode="exhaustive">ทั้งหมด</button>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="progress-wrap idle" id="compareProgressWrap">
-          <div class="progress-label"><span id="compareProgressText">เลือกเอกสารสองไฟล์</span><span id="compareProgressCount" class="progress-count"></span></div>
-          <div class="progress-track"><div id="compareProgressBar"></div></div>
         </div>
       </section>
 
@@ -137,8 +156,9 @@ export function createDocumentCompare(root) {
                   <select id="compareRoiLeftPage" aria-label="เลือกหน้าต้นฉบับสำหรับกำหนดพื้นที่"></select>
                   <button class="icon-button" id="compareRoiLeftNext" type="button" title="หน้าต้นฉบับถัดไป" aria-label="หน้าต้นฉบับถัดไป"><i data-lucide="chevron-right"></i></button>
                 </div>
+                <button class="icon-button roi-touch-edit" id="compareRoiEditLeft" type="button" title="แก้ไขพื้นที่ครอปต้นฉบับ" aria-label="แก้ไขพื้นที่ครอปต้นฉบับ" aria-pressed="false"><i data-lucide="crop"></i></button>
+                <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ" aria-label="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="rotate-ccw"></i></button>
                 <button class="icon-button" id="compareRoiApplyLeft" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก"><i data-lucide="copy"></i></button>
-                <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ" aria-label="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="maximize"></i></button>
               </div>
             </div>
             <div class="roi-stage" id="compareRoiLeftStage">
@@ -160,8 +180,9 @@ export function createDocumentCompare(root) {
                   <select id="compareRoiRightPage" aria-label="เลือกหน้าฉบับเปรียบเทียบสำหรับกำหนดพื้นที่"></select>
                   <button class="icon-button" id="compareRoiRightNext" type="button" title="หน้าฉบับเปรียบเทียบถัดไป" aria-label="หน้าฉบับเปรียบเทียบถัดไป"><i data-lucide="chevron-right"></i></button>
                 </div>
+                <button class="icon-button roi-touch-edit" id="compareRoiEditRight" type="button" title="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-label="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-pressed="false"><i data-lucide="crop"></i></button>
+                <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ" aria-label="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="rotate-ccw"></i></button>
                 <button class="icon-button" id="compareRoiApplyRight" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก"><i data-lucide="copy"></i></button>
-                <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ" aria-label="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="maximize"></i></button>
               </div>
             </div>
             <div class="roi-stage" id="compareRoiRightStage">
@@ -213,6 +234,38 @@ export function createDocumentCompare(root) {
           </div>
         </div>
       </section>
+
+      <section class="compare-command-dock" id="compareCommandDock" aria-label="คำสั่งเปรียบเทียบเอกสาร">
+        <div class="compare-command-dock-inner">
+          <div class="compare-dock-command-row">
+            <div class="compare-prompt-field">
+              <div class="compare-prompt-header">
+                <button class="icon-button compare-prompt-expand" id="compareExpandPrompt" type="button" title="ขยาย Prompt" aria-label="ขยาย Prompt"><i data-lucide="chevron-up"></i></button>
+                <div class="compare-prompt-heading">
+                  <span class="compare-dock-label" id="comparePromptLabel">Prompt</span>
+                  <span class="compare-prompt-helper" id="comparePromptHelper">กำหนดสิ่งที่ต้องตรวจ ละเว้น หรือถือว่าสำคัญ</span>
+                </div>
+                <div class="progress-wrap idle" id="compareProgressWrap" aria-live="polite">
+                  <div class="progress-label"><span id="compareProgressText"></span><span id="compareProgressCount" class="progress-count"></span></div>
+                  <div class="progress-track"><div id="compareProgressBar"></div></div>
+                </div>
+                <button class="icon-button compare-prompt-reset" id="compareResetPrompt" type="button" title="คืนค่า prompt เริ่มต้น" aria-label="คืนค่า prompt เริ่มต้น"><i data-lucide="rotate-ccw"></i></button>
+              </div>
+              <textarea id="comparePrompt" rows="3" aria-label="Prompt" aria-describedby="comparePromptHelper"></textarea>
+            </div>
+            <div class="compare-primary-actions">
+              <button class="primary" id="compareRunButton" disabled><i data-lucide="scan-search"></i><span>เปรียบเทียบ</span></button>
+              <div class="download-panel" id="compareDownloadPanel">
+                <div class="download-status" id="compareDownloadStatus" role="status" aria-live="polite" aria-hidden="true">
+                  <div class="download-status-row"><span id="compareDownloadStatusText">กำลังสร้าง PDF</span><span id="compareDownloadStatusCount"></span></div>
+                  <div class="download-progress-track"><div id="compareDownloadProgressBar"></div></div>
+                </div>
+                <button class="download-link" id="compareDownloadPdf" disabled><i data-lucide="file-down"></i><span>ดาวน์โหลด</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
   `;
 
@@ -237,8 +290,14 @@ export function createDocumentCompare(root) {
     rightClearPages: root.querySelector("#compareRightClearPages"),
     leftPageThumbnails: root.querySelector("#compareLeftPageThumbnails"),
     rightPageThumbnails: root.querySelector("#compareRightPageThumbnails"),
-    useGemini: root.querySelector("#compareUseGemini"),
-    geminiKey: root.querySelector("#compareGeminiKey"),
+    prompt: root.querySelector("#comparePrompt"),
+    promptLabel: root.querySelector("#comparePromptLabel"),
+    promptHelper: root.querySelector("#comparePromptHelper"),
+    expandPrompt: root.querySelector("#compareExpandPrompt"),
+    resetPrompt: root.querySelector("#compareResetPrompt"),
+    modeFocused: root.querySelector("#compareModeFocused"),
+    modeExhaustive: root.querySelector("#compareModeExhaustive"),
+    commandDock: root.querySelector("#compareCommandDock"),
     runButton: root.querySelector("#compareRunButton"),
     resetButton: root.querySelector("#compareResetButton"),
     progressWrap: root.querySelector("#compareProgressWrap"),
@@ -246,6 +305,10 @@ export function createDocumentCompare(root) {
     progressCount: root.querySelector("#compareProgressCount"),
     progressBar: root.querySelector("#compareProgressBar"),
     downloadPanel: root.querySelector("#compareDownloadPanel"),
+    downloadStatus: root.querySelector("#compareDownloadStatus"),
+    downloadStatusText: root.querySelector("#compareDownloadStatusText"),
+    downloadStatusCount: root.querySelector("#compareDownloadStatusCount"),
+    downloadProgressBar: root.querySelector("#compareDownloadProgressBar"),
     downloadPdf: root.querySelector("#compareDownloadPdf"),
     resultsPanel: root.querySelector("#compareResults"),
     resultBody: root.querySelector("#compareResultBody"),
@@ -265,6 +328,8 @@ export function createDocumentCompare(root) {
     roiLeftNext: root.querySelector("#compareRoiLeftNext"),
     roiRightPrevious: root.querySelector("#compareRoiRightPrevious"),
     roiRightNext: root.querySelector("#compareRoiRightNext"),
+    roiEditLeft: root.querySelector("#compareRoiEditLeft"),
+    roiEditRight: root.querySelector("#compareRoiEditRight"),
     roiApplyLeft: root.querySelector("#compareRoiApplyLeft"),
     roiApplyRight: root.querySelector("#compareRoiApplyRight"),
     roiResetLeft: root.querySelector("#compareRoiResetLeft"),
@@ -277,7 +342,7 @@ export function createDocumentCompare(root) {
     roiRightSelection: root.querySelector("#compareRoiRightSelection"),
   };
 
-  restoreGeminiKey();
+  restoreGeminiSettings();
   bindFileZone("left");
   bindFileZone("right");
   bindPagePicker("left");
@@ -286,12 +351,27 @@ export function createDocumentCompare(root) {
   els.resetButton.addEventListener("click", resetComparison);
   els.downloadPdf.addEventListener("click", downloadComparedPdf);
   els.downloadCurrent.addEventListener("click", downloadCurrentComparisonPdf);
+  els.modeFocused.addEventListener("click", () => setScanMode("focused"));
+  els.modeExhaustive.addEventListener("click", () => setScanMode("exhaustive"));
+  els.expandPrompt.addEventListener("click", togglePromptExpanded);
+  els.resetPrompt.addEventListener("click", handlePromptAction);
+  els.prompt.addEventListener("input", handlePromptInput);
+  geminiButton?.addEventListener("click", openGeminiDialog);
+  geminiDialogClose?.addEventListener("click", closeGeminiDialog);
+  geminiDialogCancel?.addEventListener("click", closeGeminiDialog);
+  geminiDialogClear?.addEventListener("click", clearGeminiKey);
+  geminiDialogSave?.addEventListener("click", saveGeminiKey);
+  geminiDialog?.addEventListener("click", (event) => {
+    if (event.target === geminiDialog) closeGeminiDialog();
+  });
   els.roiLeftPage.addEventListener("change", () => selectRoiPage("left"));
   els.roiRightPage.addEventListener("change", () => selectRoiPage("right"));
   els.roiLeftPrevious.addEventListener("click", () => changeRoiPage("left", -1));
   els.roiLeftNext.addEventListener("click", () => changeRoiPage("left", 1));
   els.roiRightPrevious.addEventListener("click", () => changeRoiPage("right", -1));
   els.roiRightNext.addEventListener("click", () => changeRoiPage("right", 1));
+  els.roiEditLeft.addEventListener("click", () => toggleRoiTouchEditing("left"));
+  els.roiEditRight.addEventListener("click", () => toggleRoiTouchEditing("right"));
   els.roiApplyLeft.addEventListener("click", () => applyRoiToSelectedPages("left"));
   els.roiApplyRight.addEventListener("click", () => applyRoiToSelectedPages("right"));
   els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
@@ -302,7 +382,8 @@ export function createDocumentCompare(root) {
     const row = event.target.closest("tr[data-result-id]");
     if (row) selectResult(row.dataset.resultId);
   });
-  els.geminiKey.addEventListener("input", persistGeminiKey);
+  setScanMode(state.scanMode);
+  updatePromptExpandUi();
   createIcons({ icons });
 
   function bindFileZone(side) {
@@ -542,7 +623,7 @@ export function createDocumentCompare(root) {
   }
 
   function describePagePair(pair) {
-    return "ต้นฉบับ " + pair.leftPage + " / ฉบับ " + pair.rightPage;
+    return "ต้นฉบับ " + pair.leftPage + " / ฉบับเทียบ " + pair.rightPage;
   }
 
   function pageNumbers(count) {
@@ -647,6 +728,9 @@ export function createDocumentCompare(root) {
     state.loadingSides.left = false;
     state.loadingSides.right = false;
     state.processing = false;
+    state.downloading = false;
+    setDownloadProgress(0, 0);
+    setPromptExpanded(false);
     clearPagePicker();
     clearRoiState();
     els.leftInput.value = "";
@@ -655,6 +739,7 @@ export function createDocumentCompare(root) {
     els.rightMeta.textContent = "PDF หรือภาพ";
     clearResults();
     setProgressIdle("เลือกเอกสารสองไฟล์");
+    updateProcessingUi();
     updateButtons();
   }
 
@@ -666,12 +751,24 @@ export function createDocumentCompare(root) {
       return;
     }
 
-    const useGemini = els.useGemini.checked;
-    const apiKey = els.geminiKey.value.trim();
+    const apiKey = state.geminiKey.trim();
+    if (!apiKey) {
+      setProgressIdle("ตั้งค่า Gemini API key ก่อนเริ่มเปรียบเทียบ");
+      updateButtons();
+      return;
+    }
+    const scanMode = state.scanMode;
+    const userPrompt = scanMode === "focused" ? els.prompt.value.trim() : "";
+    const documentContext = scanMode === "exhaustive" ? els.prompt.value.trim() : "";
+    const userPromptIsCustom = scanMode === "focused" && state.promptIsCustom;
+    if (state.promptExpanded) setPromptExpanded(false);
+    setRoiTouchEditing("left", false);
+    setRoiTouchEditing("right", false);
     const comparisonToken = state.compareToken + 1;
     state.compareToken = comparisonToken;
     state.processing = true;
     clearResults();
+    updateProcessingUi();
     updateButtons();
     const total = pagePairs.length;
     const rows = [];
@@ -690,50 +787,43 @@ export function createDocumentCompare(root) {
         ]);
         const leftRegion = getRoi(pair.leftPage, "left");
         const rightRegion = getRoi(pair.rightPage, "right");
-        const textAvailable = hasUsablePdfText(leftTextPage, rightTextPage, leftRegion, rightRegion);
-        const textFindings = textAvailable
-          ? findPdfTextDifferences(leftTextPage, rightTextPage, leftRegion, rightRegion)
-          : [];
-        const textBoxes = textFindings.map((finding) => normalizedBoxToCanvas(finding.comparisonBox, rightCanvas, {
-          label: finding.label,
-          markerKind: finding.kind,
-          markerDescription: finding.description,
-        }));
         const leftArea = cropCanvas(leftCanvas, leftRegion);
         const rightArea = cropCanvas(rightCanvas, rightRegion);
-        const visualFallback = !textAvailable && !useGemini;
-        const comparison = comparePageCanvases(leftArea, rightArea, { detectVisual: visualFallback });
+        const comparison = comparePageCanvases(leftArea, rightArea, { detectVisual: false });
+        const textEvidence = buildPdfTextEvidence(leftTextPage, rightTextPage, leftRegion, rightRegion);
+        const textCandidates = parseTextEvidenceCandidates(textEvidence);
         let geminiPageBoxes = [];
         let gemini = null;
-        if (useGemini) {
-          setProgressValue("Gemini ตรวจทาน " + pairLabel, completed, total);
-          try {
-            gemini = normalizeGeminiReview(await reviewDocumentDifference({
-              leftCanvas: comparison.referenceCanvas,
-              rightCanvas: comparison.comparisonCanvas,
-              page: pairLabel,
-              apiKey,
-              textEvidence: buildPdfTextEvidence(textFindings),
-            }));
-            const rawGeminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
-            const rawGeminiPageBoxes = mapCropBoxesToPage(rawGeminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
-            geminiPageBoxes = textAvailable
-              ? groundGeminiBoxesToPdfText(gemini, textFindings, rightCanvas, rawGeminiPageBoxes)
-              : rawGeminiPageBoxes;
-          } catch (error) {
-            gemini = { error: cleanGeminiText(error.message) || "Gemini review failed." };
-          }
+        setProgressValue("Gemini วิเคราะห์ " + pairLabel, completed, total);
+        try {
+          gemini = normalizeGeminiReview(await reviewDocumentDifference({
+            leftCanvas: comparison.referenceCanvas,
+            rightCanvas: comparison.comparisonCanvas,
+            page: pairLabel,
+            apiKey,
+            scanMode,
+            userPrompt,
+            documentContext,
+            userPromptIsCustom,
+            textEvidence,
+          }), scanMode, textCandidates, userPromptIsCustom);
+          const rawGeminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
+          const rawGeminiPageBoxes = mapCropBoxesToPage(rawGeminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
+          geminiPageBoxes = groundGeminiBoxesToPdfText(
+            gemini,
+            rightTextPage,
+            rightRegion,
+            rightCanvas,
+            rawGeminiPageBoxes,
+            textCandidates,
+          );
+        } catch (error) {
+          gemini = { error: cleanGeminiText(error.message) || "Gemini review failed." };
         }
-        const visualBoxes = visualFallback
-          ? mapCropBoxesToPage(comparison.boxes, rightRegion, rightCanvas, comparison.comparisonCanvas)
-          : [];
-        const detectorBoxes = useGemini
-          ? geminiPageBoxes
-          : textAvailable
-            ? textBoxes
-            : visualBoxes;
+        const detectorBoxes = geminiPageBoxes;
         const boxes = numberMarkerBoxes(detectorBoxes);
-        const markerDrawing = boxes.length ? drawDifferenceMarkers(rightCanvas, boxes) : null;
+        const annotationBoxes = groupMarkerBoxesForDisplay(boxes, rightCanvas);
+        const markerDrawing = annotationBoxes.length ? drawDifferenceMarkers(rightCanvas, annotationBoxes) : null;
         const [imageBlob, annotationBlob] = markerDrawing
           ? await Promise.all([
             canvasToBlob(markerDrawing.previewCanvas),
@@ -751,15 +841,9 @@ export function createDocumentCompare(root) {
           } : null,
           gemini,
           visualComparable: comparison.visualComparable,
-          comparisonSource: useGemini ? "gemini" : textAvailable ? "text" : "visual",
-          textFindings,
-          markerFindings: useGemini
-            ? buildGeminiMarkerFindings(boxes, gemini)
-            : boxes.map((box) => ({
-              number: box.markerNumber,
-              kind: box.markerKind || "visual",
-              description: box.markerDescription || box.label || "พบความต่างจากภาพเอกสาร",
-            })),
+          comparisonSource: "gemini",
+          textFindings: [],
+          markerFindings: buildGeminiMarkerFindings(boxes, gemini),
         });
         state.results = rows;
         renderResults();
@@ -768,20 +852,19 @@ export function createDocumentCompare(root) {
       }
       if (comparisonToken === state.compareToken) {
         const changedPages = rows.filter((row) => row.boxes.length).length;
-        const needsSemanticReview = !useGemini && rows.some((row) => row.comparisonSource === "visual" && row.visualComparable === false);
-        setProgressDone(
-          changedPages
+        const failedPages = rows.filter((row) => row.gemini?.error).length;
+        setProgressDone(failedPages
+          ? `เทียบเสร็จ ${rows.length}/${total} คู่ แต่ Gemini ผิดพลาด ${failedPages} คู่`
+          : changedPages
             ? "พบจุดต่าง " + changedPages + " คู่"
-            : needsSemanticReview
-              ? "โครงสร้างต่างกัน - เปิด Gemini scan"
-              : "ไม่พบจุดต่าง",
-        );
+            : "ไม่พบจุดต่าง");
       }
     } catch (error) {
       if (comparisonToken === state.compareToken) setProgressIdle(error.message || "เปรียบเทียบไม่สำเร็จ");
     } finally {
       if (comparisonToken === state.compareToken) {
         state.processing = false;
+        updateProcessingUi();
         updateButtons();
       }
     }
@@ -792,7 +875,7 @@ export function createDocumentCompare(root) {
     state.selectedResultId = null;
     revokePreviewUrl();
     els.resultsPanel.hidden = true;
-    els.downloadPanel.hidden = true;
+    els.downloadPdf.disabled = true;
     els.pageCount.textContent = "0";
     els.changedPageCount.textContent = "0";
     els.differenceCount.textContent = "0";
@@ -813,17 +896,16 @@ export function createDocumentCompare(root) {
     els.pageCount.textContent = state.results.length;
     els.changedPageCount.textContent = changedRows.length;
     els.differenceCount.textContent = state.results.reduce((sum, row) => sum + row.boxes.length, 0);
-    els.downloadPanel.hidden = !state.results.length;
     if (!state.results.length) return;
     els.resultBody.innerHTML = state.results.map((row) => {
       const detailText = row.gemini?.error
-        ? "ตรวจไม่สำเร็จ"
+        ? `Gemini error: ${row.gemini.error}`
         : row.gemini?.summary
           || row.textFindings?.[0]?.description
           || (row.comparisonSource === "text" ? "ไม่พบข้อมูลต่างจาก text layer" : (!row.visualComparable ? "โครงสร้างต่างกัน" : "-"));
       return `
         <tr data-result-id="${row.id}" class="${state.selectedResultId === row.id ? "selected" : ""}">
-          <td>ต้นฉบับ ${row.leftPage} / ฉบับ ${row.rightPage}</td>
+          <td>${describePagePair(row)}</td>
           <td><span class="difference-status ${row.boxes.length ? "has-difference" : "no-difference"}">${row.boxes.length ? `พบ ${row.boxes.length} จุด` : "ไม่พบ"}</span></td>
           <td class="gemini-summary">${escapeHtml(detailText)}</td>
         </tr>
@@ -838,7 +920,7 @@ export function createDocumentCompare(root) {
     renderResults();
     renderTextFindings(row.markerFindings);
     revokePreviewUrl();
-    els.previewTitle.textContent = "ต้นฉบับ " + row.leftPage + " / ฉบับ " + row.rightPage;
+    els.previewTitle.textContent = describePagePair(row);
     if (!row.imageBlob) {
       els.previewImage.hidden = true;
       els.previewEmpty.hidden = false;
@@ -855,52 +937,67 @@ export function createDocumentCompare(root) {
 
   async function downloadComparedPdf() {
     const rows = state.results;
-    if (!rows.length) return;
+    if (!rows.length || state.downloading) return;
+    state.downloading = true;
+    setDownloadProgress(0, rows.length);
+    updateButtons();
     els.downloadPdf.disabled = true;
     try {
-      const pdfBytes = await buildComparisonPdf(rows);
+      const pdfBytes = await buildComparisonPdf(rows, (completed, total) => setDownloadProgress(completed, total));
       triggerDownload(new Blob([pdfBytes], { type: "application/pdf" }), "document-comparison.pdf");
     } catch (error) {
       setProgressIdle(error.message || "สร้าง PDF ที่เปรียบเทียบแล้วไม่สำเร็จ");
     } finally {
-      els.downloadPdf.disabled = false;
+      state.downloading = false;
+      setDownloadProgress(0, 0);
+      updateButtons();
     }
   }
 
   async function downloadCurrentComparisonPdf() {
     const row = state.results.find((result) => result.id === state.selectedResultId);
-    if (!row) return;
+    if (!row || state.downloading) return;
+    state.downloading = true;
+    setDownloadProgress(0, 1);
+    updateButtons();
     els.downloadCurrent.disabled = true;
     try {
-      const pdfBytes = await buildComparisonPdf([row]);
+      const pdfBytes = await buildComparisonPdf([row], (completed, total) => setDownloadProgress(completed, total));
       triggerDownload(new Blob([pdfBytes], { type: "application/pdf" }), comparisonPdfFilename(row));
     } catch (error) {
       setProgressIdle(error.message || "สร้าง PDF หน้านี้ไม่สำเร็จ");
     } finally {
+      state.downloading = false;
+      setDownloadProgress(0, 0);
       els.downloadCurrent.disabled = false;
     }
   }
 
-  async function buildComparisonPdf(rows) {
+  async function buildComparisonPdf(rows, onProgress = null) {
     if (!state.rightFile) throw new Error("ไม่พบไฟล์ฉบับเปรียบเทียบ");
     const { PDFDocument } = await import("pdf-lib");
     const outputPdf = await PDFDocument.create();
     if (isPdf(state.rightFile)) {
       const sourcePdf = await PDFDocument.load(await state.rightFile.arrayBuffer(), { ignoreEncryption: true });
-      for (const row of rows) {
-        if (row.rightPage < 1 || row.rightPage > sourcePdf.getPageCount()) continue;
+      for (const [index, row] of rows.entries()) {
+        if (row.rightPage < 1 || row.rightPage > sourcePdf.getPageCount()) {
+          onProgress?.(index + 1, rows.length);
+          continue;
+        }
         const [copiedPage] = await outputPdf.copyPages(sourcePdf, [row.rightPage - 1]);
         const page = outputPdf.addPage(copiedPage);
         await drawPdfAnnotationOverlay(outputPdf, page, row.annotation);
+        onProgress?.(index + 1, rows.length);
       }
     } else {
       const sourceCanvas = await renderImageFile(state.rightFile);
       const sourceBlob = await canvasToBlob(sourceCanvas);
       const sourceImage = await outputPdf.embedPng(await sourceBlob.arrayBuffer());
-      for (const row of rows) {
+      for (const [index, row] of rows.entries()) {
         const page = outputPdf.addPage([sourceImage.width, sourceImage.height]);
         page.drawImage(sourceImage, { x: 0, y: 0, width: sourceImage.width, height: sourceImage.height });
         await drawPdfAnnotationOverlay(outputPdf, page, row.annotation);
+        onProgress?.(index + 1, rows.length);
       }
     }
     outputPdf.setTitle("Document comparison");
@@ -915,7 +1012,113 @@ export function createDocumentCompare(root) {
   }
 
   function updateButtons() {
-    els.runButton.disabled = state.processing || state.loadingSides.left || state.loadingSides.right || !state.leftSource || !state.rightSource || !getPagePairs().length;
+    els.runButton.disabled = state.processing
+      || state.loadingSides.left
+      || state.loadingSides.right
+      || !state.leftSource
+      || !state.rightSource
+      || !getPagePairs().length
+      || !state.geminiKey.trim()
+      || state.downloading;
+    els.downloadPdf.disabled = state.processing || state.downloading || !state.results.length;
+    els.downloadCurrent.disabled = state.downloading || !state.selectedResultId;
+  }
+
+  function setDownloadProgress(completed, total) {
+    const active = total > 0 || state.downloading;
+    els.downloadPanel.classList.toggle("is-downloading", active);
+    els.downloadStatus.setAttribute("aria-hidden", String(!active));
+    if (!active) {
+      els.downloadStatusText.textContent = "กำลังสร้าง PDF";
+      els.downloadStatusCount.textContent = "";
+      els.downloadProgressBar.style.width = "0%";
+      return;
+    }
+    const percent = total ? Math.max(0, Math.min(100, (completed / total) * 100)) : 0;
+    els.downloadStatusText.textContent = "กำลังสร้าง PDF";
+    els.downloadStatusCount.textContent = total ? `${completed}/${total}` : "";
+    els.downloadProgressBar.style.width = `${percent}%`;
+  }
+
+  function updateProcessingUi() {
+    els.commandDock?.classList.toggle("is-processing", state.processing);
+    updatePromptActionUi();
+    updatePromptExpandUi();
+  }
+
+  function togglePromptExpanded() {
+    setPromptExpanded(!state.promptExpanded);
+  }
+
+  function setPromptExpanded(expanded) {
+    const next = Boolean(expanded) && !state.processing;
+    const previous = state.promptExpanded;
+    const dock = els.commandDock;
+    if (!dock || next === previous) return;
+    if (state.promptCollapseTimer) {
+      window.clearTimeout(state.promptCollapseTimer);
+      state.promptCollapseTimer = null;
+    }
+    if (next) {
+      state.promptDockCollapsedHeight = dock.getBoundingClientRect().height;
+      state.promptExpanded = true;
+      dock.classList.remove("prompt-collapsing");
+      dock.style.setProperty("--prompt-dock-collapsed-height", `${Math.round(state.promptDockCollapsedHeight)}px`);
+      dock.classList.add("prompt-expanded");
+    } else {
+      state.promptExpanded = false;
+      const collapsedHeight = Math.max(1, Math.round(state.promptDockCollapsedHeight || dock.getBoundingClientRect().height));
+      dock.style.setProperty("--prompt-dock-collapsed-height", `${collapsedHeight}px`);
+      dock.classList.add("prompt-collapsing");
+      void dock.offsetHeight;
+      dock.classList.remove("prompt-expanded");
+      state.promptCollapseTimer = window.setTimeout(() => {
+        dock.classList.remove("prompt-collapsing");
+        dock.style.removeProperty("--prompt-dock-collapsed-height");
+        state.promptCollapseTimer = null;
+      }, 280);
+    }
+    updatePromptExpandUi();
+    if (state.promptExpanded) {
+      window.requestAnimationFrame(() => els.prompt.focus());
+    }
+  }
+
+  function updatePromptExpandUi() {
+    if (!els.expandPrompt) return;
+    const expanded = state.promptExpanded;
+    els.expandPrompt.disabled = state.processing;
+    els.expandPrompt.title = expanded ? "ย่อ Prompt" : "ขยาย Prompt";
+    els.expandPrompt.setAttribute("aria-label", expanded ? "ย่อ Prompt" : "ขยาย Prompt");
+    const iconName = expanded ? "chevron-down" : "chevron-up";
+    const currentIcon = els.expandPrompt.querySelector("svg");
+    if (currentIcon?.getAttribute("data-lucide") === iconName) return;
+    els.expandPrompt.innerHTML = `<i data-lucide="${iconName}"></i>`;
+    createIcons({ icons });
+  }
+
+  function updatePromptActionUi() {
+    if (state.processing) {
+      els.resetPrompt.disabled = false;
+      els.resetPrompt.title = "ยกเลิกการสแกน";
+      els.resetPrompt.setAttribute("aria-label", "ยกเลิกการสแกน");
+      setPromptActionIcon("x");
+      return;
+    }
+    const isExhaustive = state.scanMode === "exhaustive";
+    els.resetPrompt.title = isExhaustive ? "ล้างบริบทเพิ่มเติม" : "คืนค่า prompt เริ่มต้น";
+    els.resetPrompt.setAttribute("aria-label", isExhaustive ? "ล้างบริบทเพิ่มเติม" : "คืนค่า prompt เริ่มต้น");
+    els.resetPrompt.disabled = isExhaustive
+      ? !state.exhaustiveContext.trim()
+      : els.prompt.value.trim() === DEFAULT_GEMINI_PROMPT.trim();
+    setPromptActionIcon("rotate-ccw");
+  }
+
+  function setPromptActionIcon(iconName) {
+    const currentIcon = els.resetPrompt.querySelector("svg");
+    if (currentIcon?.getAttribute("data-lucide") === iconName) return;
+    els.resetPrompt.innerHTML = `<i data-lucide="${iconName}"></i>`;
+    createIcons({ icons });
   }
 
   function getSharedPageCount() {
@@ -948,20 +1151,195 @@ export function createDocumentCompare(root) {
     els.progressBar.style.width = "100%";
   }
 
-  function restoreGeminiKey() {
+  function restoreGeminiSettings() {
     try {
-      els.geminiKey.value = sessionStorage.getItem("le-pdfscan-gemini-key") || "";
+      state.geminiKey = localStorage.getItem("le-pdfscan-gemini-key")
+        || sessionStorage.getItem("le-pdfscan-gemini-key")
+        || "";
+      if (geminiDialogKey) geminiDialogKey.value = state.geminiKey;
+      const savedMode = localStorage.getItem("le-pdfscan-compare-mode");
+      state.scanMode = savedMode === "exhaustive" ? "exhaustive" : "focused";
+      const savedFocusedPrompt = localStorage.getItem("le-pdfscan-focused-prompt");
+      const savedFocusedCustomFlag = localStorage.getItem("le-pdfscan-focused-prompt-custom");
+      const legacyPrompt = localStorage.getItem("le-pdfscan-compare-prompt") || "";
+      const legacyCustomFlag = localStorage.getItem("le-pdfscan-compare-prompt-custom");
+      const legacyPromptIsCustom = Boolean(legacyPrompt) && (
+        legacyCustomFlag === "1"
+        || (legacyCustomFlag === null && !isKnownDefaultComparePrompt(legacyPrompt))
+      );
+      const focusedPrompt = savedFocusedPrompt ?? (legacyPromptIsCustom ? legacyPrompt : "");
+      state.promptIsCustom = Boolean(focusedPrompt) && (
+        savedFocusedCustomFlag === "1"
+        || (savedFocusedCustomFlag === null && !isKnownDefaultComparePrompt(focusedPrompt))
+      );
+      state.focusedPrompt = state.promptIsCustom ? focusedPrompt : DEFAULT_GEMINI_PROMPT;
+      state.exhaustiveContext = localStorage.getItem("le-pdfscan-exhaustive-context") || "";
+      els.prompt.value = getPromptFieldValue();
     } catch {
-      // Storage may be unavailable in private browser contexts.
+      state.promptIsCustom = false;
+      state.focusedPrompt = DEFAULT_GEMINI_PROMPT;
+      state.exhaustiveContext = "";
+      state.geminiKey = "";
+      if (geminiDialogKey) geminiDialogKey.value = "";
+      els.prompt.value = getPromptFieldValue();
     }
+    updateGeminiHeader();
   }
 
   function persistGeminiKey() {
     try {
-      sessionStorage.setItem("le-pdfscan-gemini-key", els.geminiKey.value);
+      if (state.geminiKey) {
+        localStorage.setItem("le-pdfscan-gemini-key", state.geminiKey);
+        sessionStorage.removeItem("le-pdfscan-gemini-key");
+      } else {
+        localStorage.removeItem("le-pdfscan-gemini-key");
+        sessionStorage.removeItem("le-pdfscan-gemini-key");
+      }
     } catch {
-      // The current tab can still use the key when session storage is unavailable.
+      // The current tab can still use the key when storage is unavailable.
     }
+  }
+
+  function openGeminiDialog() {
+    if (!geminiDialog || !geminiDialogKey) return;
+    geminiDialogKey.value = state.geminiKey;
+    geminiDialog.hidden = false;
+    document.body.classList.add("gemini-dialog-open");
+    window.requestAnimationFrame(() => geminiDialogKey.focus());
+  }
+
+  function closeGeminiDialog() {
+    if (!geminiDialog) return;
+    geminiDialog.hidden = true;
+    document.body.classList.remove("gemini-dialog-open");
+  }
+
+  function saveGeminiKey() {
+    state.geminiKey = geminiDialogKey?.value.trim() || "";
+    persistGeminiKey();
+    updateGeminiHeader();
+    updateButtons();
+    closeGeminiDialog();
+    if (!state.processing) {
+      setProgressIdle(state.geminiKey ? "Gemini พร้อมใช้งาน" : "ตั้งค่า Gemini API key ก่อนเริ่มเปรียบเทียบ");
+    }
+  }
+
+  function updateGeminiHeader() {
+    if (!geminiButton || !geminiHeaderStatus) return;
+    const configured = Boolean(state.geminiKey.trim());
+    geminiHeaderStatus.textContent = configured ? "พร้อมใช้งาน" : "ตั้งค่า API key";
+    geminiButton.classList.toggle("is-ready", configured);
+    geminiButton.setAttribute("aria-label", configured ? "แก้ไข Gemini API key" : "ตั้งค่า Gemini API key");
+    geminiButton.title = configured ? "แก้ไข Gemini API key" : "ตั้งค่า Gemini API key";
+    if (geminiDialogClear) geminiDialogClear.disabled = !configured;
+  }
+
+  function clearGeminiKey() {
+    state.geminiKey = "";
+    if (geminiDialogKey) geminiDialogKey.value = "";
+    try {
+      localStorage.removeItem("le-pdfscan-gemini-key");
+      sessionStorage.removeItem("le-pdfscan-gemini-key");
+    } catch {
+      // The visible field is still cleared when browser storage is unavailable.
+    }
+    updateGeminiHeader();
+    updateButtons();
+    if (!state.processing) setProgressIdle("ตั้งค่า Gemini API key ก่อนเริ่มเปรียบเทียบ");
+    closeGeminiDialog();
+  }
+
+  function persistPrompt() {
+    try {
+      localStorage.setItem("le-pdfscan-focused-prompt", state.focusedPrompt);
+      localStorage.setItem("le-pdfscan-focused-prompt-custom", state.promptIsCustom ? "1" : "0");
+      localStorage.setItem("le-pdfscan-exhaustive-context", state.exhaustiveContext);
+      localStorage.removeItem("le-pdfscan-compare-prompt");
+      localStorage.removeItem("le-pdfscan-compare-prompt-custom");
+    } catch {
+      // The current tab can still use the prompt when storage is unavailable.
+    }
+  }
+
+  function handlePromptInput() {
+    if (state.scanMode === "exhaustive") {
+      state.exhaustiveContext = els.prompt.value;
+    } else {
+      state.focusedPrompt = els.prompt.value;
+      const prompt = state.focusedPrompt.trim();
+      state.promptIsCustom = Boolean(prompt) && !isKnownDefaultComparePrompt(prompt);
+    }
+    updatePromptFieldUi();
+    persistPrompt();
+  }
+
+  function handlePromptAction() {
+    if (state.processing) {
+      cancelComparison();
+      return;
+    }
+    resetPrompt();
+  }
+
+  function cancelComparison() {
+    if (!state.processing) return;
+    state.compareToken += 1;
+    state.processing = false;
+    setProgressIdle("ยกเลิกการสแกน");
+    updateProcessingUi();
+    updateButtons();
+  }
+
+  function resetPrompt() {
+    if (state.scanMode === "exhaustive") {
+      state.exhaustiveContext = "";
+    } else {
+      state.promptIsCustom = false;
+      state.focusedPrompt = DEFAULT_GEMINI_PROMPT;
+    }
+    els.prompt.value = getPromptFieldValue();
+    updatePromptFieldUi();
+    persistPrompt();
+  }
+
+  function setScanMode(mode) {
+    state.scanMode = mode === "exhaustive" ? "exhaustive" : "focused";
+    els.prompt.value = getPromptFieldValue();
+    updatePromptFieldUi();
+    persistPrompt();
+    [els.modeFocused, els.modeExhaustive].forEach((button) => {
+      const active = button.dataset.mode === state.scanMode;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    try {
+      localStorage.setItem("le-pdfscan-compare-mode", state.scanMode);
+    } catch {
+      // Mode remains active for the current page when storage is unavailable.
+    }
+    updateButtons();
+  }
+
+  function getPromptFieldValue() {
+    if (state.scanMode === "exhaustive") return state.exhaustiveContext;
+    return state.promptIsCustom ? state.focusedPrompt : DEFAULT_GEMINI_PROMPT;
+  }
+
+  function updatePromptFieldUi() {
+    const isExhaustive = state.scanMode === "exhaustive";
+    if (isExhaustive) {
+      els.promptLabel.textContent = "บริบทเอกสารเพิ่มเติม";
+      els.promptHelper.textContent = "ไม่บังคับ · ใช้ช่วยจับคู่คำศัพท์และฟิลด์ โดยไม่ลดขอบเขตการตรวจ";
+      els.prompt.placeholder = "เช่น ไฟล์ซ้ายเป็นใบเสนอราคา ส่วนไฟล์ขวาเป็นใบสั่งซื้อ หรือ SET และ ชุด หมายถึงหน่วยเดียวกัน";
+      els.prompt.setAttribute("aria-label", "บริบทเอกสารเพิ่มเติมสำหรับ Gemini");
+    } else {
+      els.promptLabel.textContent = "Prompt";
+      els.promptHelper.textContent = "กำหนดสิ่งที่ต้องตรวจ ละเว้น หรือถือว่าสำคัญ";
+      els.prompt.placeholder = "ระบุเกณฑ์สาระสำคัญที่ต้องการให้ Gemini ตรวจ";
+      els.prompt.setAttribute("aria-label", "Prompt");
+    }
+    updatePromptActionUi();
   }
 
   function revokePreviewUrl() {
@@ -991,6 +1369,8 @@ export function createDocumentCompare(root) {
     state.roiPages.left = null;
     state.roiPages.right = null;
     state.roiDrag = null;
+    setRoiTouchEditing("left", false);
+    setRoiTouchEditing("right", false);
     els.roiPanel.hidden = true;
     clearPreviewCanvas(els.roiLeftCanvas);
     clearPreviewCanvas(els.roiRightCanvas);
@@ -1018,6 +1398,7 @@ export function createDocumentCompare(root) {
     const page = getActiveRoiPage(side);
     if (!page) return;
     state.roiSelections.delete(roiSelectionKey(side, page));
+    setRoiTouchEditing(side, false);
     renderRoiSelection(side);
   }
 
@@ -1025,6 +1406,7 @@ export function createDocumentCompare(root) {
     const select = side === "left" ? els.roiLeftPage : els.roiRightPage;
     const page = Number(select.value);
     if (!getSelectedPages(side).includes(page)) return;
+    setRoiTouchEditing(side, false);
     state.roiPages[side] = page;
     void renderRoiPreviews();
   }
@@ -1035,6 +1417,7 @@ export function createDocumentCompare(root) {
     if (!pages.length || currentIndex < 0) return;
     const nextIndex = clamp(currentIndex + offset, 0, pages.length - 1);
     if (nextIndex === currentIndex) return;
+    setRoiTouchEditing(side, false);
     state.roiPages[side] = pages[nextIndex];
     void renderRoiPreviews();
   }
@@ -1089,6 +1472,7 @@ export function createDocumentCompare(root) {
       const select = side === "left" ? els.roiLeftPage : els.roiRightPage;
       const previous = side === "left" ? els.roiLeftPrevious : els.roiRightPrevious;
       const next = side === "left" ? els.roiLeftNext : els.roiRightNext;
+      const edit = side === "left" ? els.roiEditLeft : els.roiEditRight;
       const apply = side === "left" ? els.roiApplyLeft : els.roiApplyRight;
       const reset = side === "left" ? els.roiResetLeft : els.roiResetRight;
       select.innerHTML = pages.map((page) => `<option value="${page}">หน้า ${page}</option>`).join("");
@@ -1097,8 +1481,9 @@ export function createDocumentCompare(root) {
       const activeIndex = pages.indexOf(activePage);
       previous.disabled = activeIndex <= 0;
       next.disabled = activeIndex < 0 || activeIndex >= pages.length - 1;
+      edit.disabled = !activePage || state.processing;
       apply.disabled = !activePage;
-      reset.disabled = !activePage;
+      reset.disabled = !activePage || !hasCustomRoi(activePage, side) || state.processing;
     });
   }
 
@@ -1131,6 +1516,8 @@ export function createDocumentCompare(root) {
     selection.style.height = `${region.height * 100}%`;
     selection.setAttribute("aria-label", custom ? "พื้นที่เปรียบเทียบที่เลือก" : "ใช้ทั้งหน้า");
     stage.classList.toggle("has-custom-selection", custom);
+    const reset = side === "left" ? els.roiResetLeft : els.roiResetRight;
+    reset.disabled = !custom || state.processing;
   }
 
   function bindRoiStage(side) {
@@ -1138,6 +1525,7 @@ export function createDocumentCompare(root) {
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !state.leftSource || !state.rightSource) return;
+      if (event.pointerType === "touch" && !state.roiTouchEditing[side]) return;
       const page = getActiveRoiPage(side);
       if (!page) return;
       const point = getStagePoint(stage, event);
@@ -1158,6 +1546,38 @@ export function createDocumentCompare(root) {
     stage.addEventListener("pointermove", (event) => updateRoiDrag(side, stage, event));
     stage.addEventListener("pointerup", (event) => finishRoiDrag(side, stage, event));
     stage.addEventListener("pointercancel", (event) => finishRoiDrag(side, stage, event));
+  }
+
+  function toggleRoiTouchEditing(side) {
+    setRoiTouchEditing(side, !state.roiTouchEditing[side]);
+  }
+
+  function setRoiTouchEditing(side, editing) {
+    const next = Boolean(editing);
+    if (next) {
+      const otherSide = side === "left" ? "right" : "left";
+      state.roiTouchEditing[otherSide] = false;
+      updateRoiTouchEditingUi(otherSide);
+    }
+    state.roiTouchEditing[side] = next;
+    updateRoiTouchEditingUi(side);
+  }
+
+  function updateRoiTouchEditingUi(side) {
+    const active = state.roiTouchEditing[side];
+    const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
+    const button = side === "left" ? els.roiEditLeft : els.roiEditRight;
+    const documentLabel = side === "left" ? "ต้นฉบับ" : "ฉบับเปรียบเทียบ";
+    stage.classList.toggle("touch-editing", active);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.title = active ? `เสร็จสิ้นการแก้ไขพื้นที่ครอป${documentLabel}` : `แก้ไขพื้นที่ครอป${documentLabel}`;
+    button.setAttribute("aria-label", button.title);
+    const iconName = active ? "check" : "crop";
+    const currentIcon = button.querySelector("svg");
+    if (currentIcon?.getAttribute("data-lucide") === iconName) return;
+    button.innerHTML = `<i data-lucide="${iconName}"></i>`;
+    createIcons({ icons });
   }
 
   function updateRoiDrag(side, stage, event) {
@@ -1273,6 +1693,106 @@ function numberMarkerBoxes(boxes) {
   return boxes.map((box, index) => ({ ...box, markerNumber: index + 1 }));
 }
 
+function groupMarkerBoxesForDisplay(boxes, canvas) {
+  const pending = boxes.map((box) => ({ ...box }));
+  const groups = [];
+  const topicMargin = Math.max(28, Math.round(Math.min(canvas.width, canvas.height) * 0.075));
+
+  while (pending.length) {
+    const group = [pending.shift()];
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (let index = pending.length - 1; index >= 0; index -= 1) {
+        if (!group.some((member) => shouldGroupMarkerBoxes(member, pending[index], topicMargin))) continue;
+        group.push(pending[index]);
+        pending.splice(index, 1);
+        expanded = true;
+      }
+    }
+    groups.push(group);
+  }
+
+  return groups.map((group) => {
+    const merged = group.reduce((current, box) => unionBox(current, box));
+    const markerNumbers = [...new Set(group
+      .map((box) => Number(box.markerNumber))
+      .filter(Number.isInteger))]
+      .sort((first, second) => first - second);
+    const descriptions = [...new Set(group
+      .map((box) => String(box.markerDescription || box.label || "").replace(/\s+/g, " ").trim())
+      .filter(Boolean))];
+    const locations = [...new Set(group
+      .map((box) => String(box.markerLocation || "").replace(/\s+/g, " ").trim())
+      .filter(Boolean))];
+    const markerDescription = descriptions.length
+      ? descriptions.join(" / ")
+      : "Gemini พบจุดต่างในบริเวณนี้";
+    return {
+      ...merged,
+      label: markerDescription,
+      markerKind: "gemini",
+      markerDescription,
+      markerLocation: locations.length === 1 ? locations[0] : "",
+      groupedMarkerCount: group.length,
+      markerNumber: formatGroupedMarkerNumber(markerNumbers),
+      groupedMarkerNumbers: markerNumbers,
+      geminiChangeIndexes: group
+        .flatMap((box) => Array.isArray(box.geminiChangeIndexes)
+          ? box.geminiChangeIndexes
+          : [box.geminiChangeIndex])
+        .filter((index) => Number.isInteger(index)),
+    };
+  });
+}
+
+function formatGroupedMarkerNumber(numbers) {
+  if (!numbers.length) return "?";
+  if (numbers.length === 1) return numbers[0];
+  const contiguous = numbers.every((number, index) => index === 0 || number === numbers[index - 1] + 1);
+  return contiguous
+    ? `${numbers[0]}-${numbers[numbers.length - 1]}`
+    : numbers.join("/");
+}
+
+function shouldGroupMarkerBoxes(first, second, topicMargin) {
+  if (boxesOverlap(first, second)) return true;
+  const firstTopic = markerTopicKey(first);
+  const secondTopic = markerTopicKey(second);
+  if (!firstTopic || firstTopic !== secondTopic || !boxesTouch(first, second, topicMargin)) return false;
+  const horizontalOverlap = Math.max(
+    0,
+    Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x),
+  );
+  const verticalOverlap = Math.max(
+    0,
+    Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y),
+  );
+  const horizontalAlignment = horizontalOverlap / Math.max(1, Math.min(first.width, second.width));
+  const verticalAlignment = verticalOverlap / Math.max(1, Math.min(first.height, second.height));
+  return horizontalAlignment >= 0.25 || verticalAlignment >= 0.25;
+}
+
+function markerTopicKey(box) {
+  const text = `${box.markerLocation || ""} ${box.markerDescription || box.label || ""}`;
+  const normalized = normalizeMarkerTopic(text);
+  if (/(ราคา|ราคาต่อหน่วย|price|unitprice)/u.test(normalized)) return "price";
+  if (/(ยอดรวม|subtotal|total|ยอดก่อนภาษี|grandtotal)/u.test(normalized)) return "total";
+  if (/(หน่วย|unit)/u.test(normalized)) return "unit";
+  if (/(รหัส|รหัสสินค้า|รหัสวัสดุ|material|code|เลขที่สินค้า)/u.test(normalized)) return "code";
+  if (/(วันที่|กำหนดส่ง|deliverydate|date)/u.test(normalized)) return "date";
+  if (/(รายละเอียด|description|spec|รุ่น|model|suffix|option)/u.test(normalized)) return "description";
+  if (/(ส่วนลด|discount|ภาษี|vat)/u.test(normalized)) return "adjustment";
+  return normalized;
+}
+
+function normalizeMarkerTopic(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s\p{P}\p{S}_]+/gu, "");
+}
+
 function normalizedBoxToCanvas(box, canvas, metadata = {}) {
   const x = clamp(Math.round((Number(box?.x) || 0) * canvas.width), 0, Math.max(0, canvas.width - 1));
   const y = clamp(Math.round((Number(box?.y) || 0) * canvas.height), 0, Math.max(0, canvas.height - 1));
@@ -1355,12 +1875,28 @@ function comparePageCanvases(leftCanvas, rightCanvas, { detectVisual = true } = 
   return { referenceCanvas: alignedReference, comparisonCanvas, boxes, visualComparable };
 }
 
-function normalizeGeminiReview(review) {
+function normalizeGeminiReview(
+  review,
+  scanMode = "focused",
+  textCandidates = [],
+  preserveModelDescriptions = false,
+) {
   const source = review && typeof review === "object" ? review : {};
-  const changes = Array.isArray(source.changes)
-    ? source.changes.map((change) => normalizeGeminiChange(change)).filter(Boolean)
+  const normalizedChanges = Array.isArray(source.changes)
+    ? source.changes.map((change) => {
+      const textCandidate = resolveGeminiTextCandidate(change, textCandidates);
+      return normalizeGeminiChange(change, textCandidate, preserveModelDescriptions);
+    }).filter(Boolean)
     : [];
-  const summary = cleanGeminiText(source.summary) || (changes.length ? `Gemini พบจุดต่าง ${changes.length} จุด` : "Gemini ไม่พบจุดต่างที่ยืนยันได้");
+  const changes = scanMode === "focused"
+    ? normalizedChanges.filter((change) => change.materiality === "material")
+    : normalizedChanges;
+  const summary = scanMode === "focused"
+    ? (changes.length
+      ? `พบความต่างสาระสำคัญ ${changes.length} จุด`
+      : "ไม่พบความต่างสาระสำคัญที่ยืนยันได้")
+    : cleanGeminiText(source.summary)
+      || (changes.length ? `Gemini พบจุดต่าง ${changes.length} จุด` : "Gemini ไม่พบจุดต่างที่ยืนยันได้");
   return { ...source, summary, changes };
 }
 
@@ -1384,20 +1920,121 @@ function buildGeminiMarkerFindings(boxes, review) {
   return [...marked, ...unlocated];
 }
 
-function normalizeGeminiChange(change) {
+function normalizeGeminiChange(change, textCandidate = null, preserveModelDescription = false) {
   if (!change || typeof change !== "object") return null;
   const referenceText = cleanGeminiText(change.referenceText);
   const comparisonText = cleanGeminiText(change.comparisonText);
-  const description = cleanGeminiText(change.description)
+  const evidenceDescription = preserveModelDescription ? "" : describeTextCandidateDelta(textCandidate);
+  const description = evidenceDescription
+    || cleanGeminiText(change.description)
     || cleanGeminiText(change.summary)
     || describeGeminiChange(referenceText, comparisonText);
+  const materiality = normalizeGeminiMateriality(change.materiality);
   return {
     ...change,
     location: cleanGeminiText(change.location),
     description,
     referenceText,
     comparisonText,
+    materiality,
+    candidateId: textCandidate?.id || cleanGeminiText(change.candidateId),
   };
+}
+
+function resolveGeminiTextCandidate(change, candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return null;
+  const candidateId = cleanGeminiText(change?.candidateId);
+  if (candidateId) {
+    const direct = candidates.find((candidate) => candidate?.id === candidateId);
+    if (direct) return direct;
+  }
+
+  const referenceText = isPlaceholderGeminiText(change?.referenceText) ? "" : cleanGeminiText(change?.referenceText);
+  const comparisonText = isPlaceholderGeminiText(change?.comparisonText) ? "" : cleanGeminiText(change?.comparisonText);
+  let best = null;
+  candidates.forEach((candidate) => {
+    const referenceScore = scoreCandidateEvidence(
+      referenceText,
+      candidate?.referenceContext,
+      candidate?.referenceFragment,
+    );
+    const comparisonScore = scoreCandidateEvidence(
+      comparisonText,
+      candidate?.comparisonContext,
+      candidate?.comparisonFragment,
+    );
+    if (referenceText && referenceScore === 0) return;
+    if (comparisonText && comparisonScore === 0) return;
+    const score = referenceScore + comparisonScore;
+    if (score >= 5 && (!best || score > best.score)) best = { candidate, score };
+  });
+  return best?.candidate || null;
+}
+
+function scoreCandidateEvidence(value, context, fragment) {
+  const normalizedValue = normalizeCandidateEvidence(value);
+  if (!normalizedValue) return 0;
+  const normalizedContext = normalizeCandidateEvidence(context);
+  const normalizedFragment = normalizeCandidateEvidence(fragment);
+  if (normalizedContext && normalizedValue === normalizedContext) return 6;
+  if (normalizedFragment && normalizedValue === normalizedFragment) return 5;
+  if (normalizedContext && normalizedValue.length >= 8
+    && (normalizedContext.includes(normalizedValue) || normalizedValue.includes(normalizedContext))) return 3;
+  if (normalizedFragment && normalizedValue.includes(normalizedFragment)) return 2;
+  return 0;
+}
+
+function normalizeCandidateEvidence(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[\s\p{P}\p{S}_]+/gu, "");
+}
+
+function describeTextCandidateDelta(candidate) {
+  if (!candidate) return "";
+  const reference = formatCandidateFragment(
+    candidate.referenceFragment,
+    candidate.referenceContext,
+    candidate.comparisonContext,
+  );
+  const comparison = formatCandidateFragment(
+    candidate.comparisonFragment,
+    candidate.comparisonContext,
+    candidate.referenceContext,
+  );
+  if (reference && comparison) return `เปลี่ยนจาก ${reference} เป็น ${comparison}`;
+  if (reference) return `ต้นฉบับมี ${reference} แต่ฉบับเปรียบเทียบไม่มี`;
+  if (comparison) return `ฉบับเปรียบเทียบมี ${comparison} แต่ต้นฉบับไม่มี`;
+  return "";
+}
+
+function formatCandidateFragment(fragment, context, oppositeContext) {
+  const value = String(fragment || "").replace(/\s+/g, "").trim();
+  if (!value) return "";
+  const compactContext = String(context || "").replace(/\s+/g, "");
+  const index = compactContext.toLocaleLowerCase().indexOf(value.toLocaleLowerCase());
+  let display = index >= 0
+    ? compactContext.slice(index, index + value.length)
+    : value;
+  const previousCharacter = index > 0 ? compactContext[index - 1] : "";
+  const compactOpposite = String(oppositeContext || "").replace(/\s+/g, "");
+  if (previousCharacter === "-" && compactOpposite.endsWith("-") && !display.startsWith("-")) {
+    display = `-${display}`;
+  }
+  return display;
+}
+
+function normalizeGeminiMateriality(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[_\s-]+/g, "");
+  if (normalized === "material") return "material";
+  if (normalized === "contextual") return "contextual";
+  if (normalized === "workflow") return "workflow";
+  if (normalized === "layout") return "layout";
+  return "uncertain";
 }
 
 function describeGeminiChange(referenceText, comparisonText) {
@@ -1455,26 +2092,50 @@ function geminiReviewBoxes(review, width, height) {
       label: description || "Gemini พบจุดต่าง",
       markerKind: "gemini",
       markerDescription: description || "Gemini พบจุดต่างในบริเวณนี้",
+      markerLocation: cleanGeminiText(change.location),
       geminiChangeIndex: index,
     };
   }).filter(Boolean);
 }
 
-function groundGeminiBoxesToPdfText(review, textFindings, pageCanvas, fallbackBoxes) {
-  if (!Array.isArray(review?.changes) || !textFindings.length) return fallbackBoxes;
+function groundGeminiBoxesToPdfText(review, textPage, textRegion, pageCanvas, fallbackBoxes, textCandidates = []) {
+  if (!Array.isArray(review?.changes) || !textPage?.items?.length) return fallbackBoxes;
   const fallbackByChangeIndex = new Map(fallbackBoxes.map((box) => [box.geminiChangeIndex, box]));
-  const usedFindingIndexes = new Set();
+  const candidateById = new Map(textCandidates.map((candidate) => [candidate.id, candidate]));
+  const usedTextBoxes = [];
   const boxes = [];
 
   review.changes.forEach((change, changeIndex) => {
-    const findingIndex = findGeminiTextFindingMatch(change, textFindings, usedFindingIndexes);
-    if (findingIndex >= 0) {
-      const finding = textFindings[findingIndex];
-      usedFindingIndexes.add(findingIndex);
-      boxes.push(normalizedBoxToCanvas(finding.comparisonBox, pageCanvas, {
-        label: change.description || finding.label || "Gemini พบจุดต่าง",
+    const candidate = candidateById.get(change?.candidateId);
+    if (candidate?.comparisonBox) {
+      const candidateBox = normalizedBoxToCanvas(candidate.comparisonBox, pageCanvas, {
+        label: change.description || "Gemini พบจุดต่าง",
         markerKind: "gemini",
-        markerDescription: change.description || finding.description || "Gemini พบจุดต่างในบริเวณนี้",
+        markerDescription: change.description || "Gemini พบจุดต่างในบริเวณนี้",
+        markerLocation: cleanGeminiText(change.location),
+        geminiChangeIndex: changeIndex,
+        markerSource: "pdf-text-candidate",
+      });
+      if (!usedTextBoxes.some((used) => boxesOverlap(candidateBox, used))) {
+        usedTextBoxes.push(candidateBox);
+        boxes.push(candidateBox);
+        return;
+      }
+    }
+    const comparisonText = isPlaceholderGeminiText(change?.comparisonText)
+      ? ""
+      : change?.comparisonText;
+    const match = comparisonText
+      ? findPdfTextMatches(textPage, textRegion, comparisonText)
+        .find((candidate) => !usedTextBoxes.some((used) => boxesOverlap(candidate.box, used)))
+      : null;
+    if (match?.box) {
+      usedTextBoxes.push(match.box);
+      boxes.push(normalizedBoxToCanvas(match.box, pageCanvas, {
+        label: change.description || "Gemini พบจุดต่าง",
+        markerKind: "gemini",
+        markerDescription: change.description || "Gemini พบจุดต่างในบริเวณนี้",
+        markerLocation: cleanGeminiText(change.location),
         geminiChangeIndex: changeIndex,
         markerSource: "pdf-text",
       }));
@@ -1482,37 +2143,34 @@ function groundGeminiBoxesToPdfText(review, textFindings, pageCanvas, fallbackBo
     }
 
     const fallback = fallbackByChangeIndex.get(changeIndex);
-    if (fallback) boxes.push(fallback);
+    // A text-backed page must not fall back to an unverified Gemini coordinate
+    // when the claimed comparison text cannot be found there.
+    if (fallback && isPlaceholderGeminiText(change?.comparisonText)) boxes.push(fallback);
   });
 
   return boxes;
 }
 
-function findGeminiTextFindingMatch(change, textFindings, usedFindingIndexes) {
-  let best = { index: -1, score: 0 };
-  textFindings.forEach((finding, index) => {
-    if (usedFindingIndexes.has(index) || !finding?.comparisonBox) return;
-    const score = geminiTextFindingScore(change, finding);
-    if (score > best.score) best = { index, score };
-  });
-  return best.score >= 0.7 ? best.index : -1;
+function parseTextEvidenceCandidates(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed?.boundedTextCandidates) ? parsed.boundedTextCandidates : [];
+  } catch {
+    return [];
+  }
 }
 
-function geminiTextFindingScore(change, finding) {
-  const reference = normalizeGeminiMatchText(change?.referenceText);
-  const comparison = normalizeGeminiMatchText(change?.comparisonText);
-  const findingReference = normalizeGeminiMatchText(finding?.referenceText);
-  const findingComparison = normalizeGeminiMatchText(finding?.comparisonText);
-  const referenceScore = geminiTextMatchScore(reference, findingReference);
-  const comparisonScore = geminiTextMatchScore(comparison, findingComparison);
+function isPlaceholderGeminiText(value) {
+  const normalized = normalizeGeminiMatchText(value);
+  return !normalized || ["none", "null", "n/a", "ไม่มี", "ไม่พบ", "ไม่ได้ระบุ"].includes(normalized);
+}
 
-  if (reference && comparison) {
-    if (referenceScore < 0.58 || comparisonScore < 0.58) return 0;
-    return (referenceScore * 0.45) + (comparisonScore * 0.55);
-  }
-  if (comparison) return comparisonScore >= 0.86 ? comparisonScore : 0;
-  if (reference) return referenceScore >= 0.86 ? referenceScore : 0;
-  return 0;
+function boxesOverlap(first, second) {
+  return first.x < second.x + second.width
+    && first.x + first.width > second.x
+    && first.y < second.y + second.height
+    && first.y + first.height > second.y;
 }
 
 function normalizeGeminiMatchText(value) {
@@ -1522,15 +2180,6 @@ function normalizeGeminiMatchText(value) {
     .replace(/[\s\p{P}\p{S}_]+/gu, "");
 }
 
-function geminiTextMatchScore(first, second) {
-  if (!first || !second) return 0;
-  if (first === second) return 1;
-  if (/^\d+$/.test(first) && /^\d+$/.test(second)) return 0;
-  const shorter = first.length <= second.length ? first : second;
-  const longer = first.length > second.length ? first : second;
-  if (shorter.length < 4 || !longer.includes(shorter)) return 0;
-  return 0.72 + Math.min(0.26, (shorter.length / Math.max(1, longer.length)) * 0.26);
-}
 
 function normalizePair(leftCanvas, rightCanvas) {
   const comparisonCanvas = cloneCanvas(rightCanvas);
@@ -1831,8 +2480,6 @@ function drawDifferenceMarkers(canvas, boxes) {
   const context = overlayCanvas.getContext("2d");
   const lineWidth = Math.max(2, Math.round(Math.min(canvas.width, canvas.height) * 0.0026));
   const padding = Math.max(10, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
-  const badgeSize = clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.026), 20, 32);
-  const occupiedBadgeRects = [];
   const markers = boxes.map((box, index) => ({
     box,
     number: box.markerNumber || index + 1,
@@ -1848,7 +2495,6 @@ function drawDifferenceMarkers(canvas, boxes) {
     context.beginPath();
     context.ellipse(box.x + (box.width / 2), box.y + (box.height / 2), radiusX, radiusY, 0, 0, Math.PI * 2);
     context.stroke();
-    drawMarkerBadge(context, canvas, box, radiusX, radiusY, marker.number, badgeSize, occupiedBadgeRects);
   });
   drawMarkerCallouts(context, canvas, markers);
 
@@ -1891,7 +2537,7 @@ function createMarkerCalloutCards(context, documentCanvas, markers, fontSize) {
   const cards = markers.map((marker) => {
     const text = String(marker.box.markerDescription || marker.box.label || "พบความต่างจากเอกสาร").replace(/\s+/g, " ").trim();
     const maximumTextWidth = maximumWidth - badgeSize - (cardPadding * 3);
-    const lines = wrapCanvasText(context, text, maximumTextWidth, 4);
+    const lines = wrapCanvasText(context, text, maximumTextWidth, marker.box.groupedMarkerCount > 1 ? 6 : 4);
     const longestLine = Math.max(...lines.map((line) => context.measureText(line).width));
     const width = clamp(Math.ceil(longestLine + badgeSize + (cardPadding * 3)), minimumWidth, maximumWidth);
     return {
@@ -1910,17 +2556,10 @@ function createMarkerCalloutCards(context, documentCanvas, markers, fontSize) {
 }
 
 function placeMarkerCallouts(documentCanvas, cards, markers) {
-  const sampler = createInkDensitySampler(documentCanvas);
-  const protectedRects = markers.map((marker) => ({
-    x: marker.box.x - marker.radiusX - 6,
-    y: marker.box.y - marker.radiusY - 6,
-    width: (marker.radiusX * 2) + 12,
-    height: (marker.radiusY * 2) + 12,
-  }));
   const occupied = [];
   const ordered = [...cards].sort((first, second) => second.height - first.height || first.box.y - second.box.y || first.number - second.number);
   for (const card of ordered) {
-    const placement = findMarkerCalloutPlacement(documentCanvas, card, occupied, protectedRects, sampler);
+    const placement = findMarkerCalloutPlacement(documentCanvas, card, occupied, markers);
     if (!placement) return false;
     card.x = placement.x;
     card.y = placement.y;
@@ -1929,23 +2568,31 @@ function placeMarkerCallouts(documentCanvas, cards, markers) {
   return true;
 }
 
-function findMarkerCalloutPlacement(canvas, card, occupied, protectedRects, sampler) {
+function findMarkerCalloutPlacement(canvas, card, occupied, markers) {
   const margin = Math.max(8, Math.round(card.fontSize * 0.5));
   const candidates = buildMarkerCalloutCandidates(canvas, card, margin);
   let best = null;
+  let bestClear = null;
   for (const candidate of candidates) {
     const rect = { x: candidate.x, y: candidate.y, width: card.width, height: card.height };
     if (!rectFitsCanvas(rect, canvas, margin)) continue;
     if (occupied.some((occupiedRect) => rectanglesOverlap(rect, occupiedRect, margin))) continue;
-    const protectedArea = protectedRects.reduce((total, protectedRect) => total + rectangleIntersectionArea(rect, protectedRect), 0);
+    if (markers.some((marker) => ellipseIntersectsRect(marker, rect, 5))) continue;
     const distance = Math.hypot(
       (rect.x + (rect.width / 2)) - (card.box.x + (card.box.width / 2)),
       (rect.y + (rect.height / 2)) - (card.box.y + (card.box.height / 2)),
     );
-    const score = (sampler(rect) * 3200) + (protectedArea * 0.08) + (distance * 0.15);
+    const score = distance;
     if (!best || score < best.score) best = { ...rect, score };
+    const leader = buildMarkerLeaderSegment(card, rect);
+    const crossesMarker = markers.some((marker) => marker.box !== card.box
+      && lineIntersectsEllipse(leader, marker, 3));
+    const crossesCard = occupied.some((occupiedRect) => lineIntersectsRect(leader, occupiedRect, 2));
+    if (!crossesMarker && !crossesCard && (!bestClear || score < bestClear.score)) {
+      bestClear = { ...rect, score };
+    }
   }
-  return best;
+  return bestClear || best;
 }
 
 function buildMarkerCalloutCandidates(canvas, card, margin) {
@@ -1958,6 +2605,10 @@ function buildMarkerCalloutCandidates(canvas, card, margin) {
   const offsets = [8, 20, 44, 76, 118, 172, 240, 320];
   offsets.forEach((offset) => {
     candidates.push(
+      { x: ((left + right) / 2) - (card.width / 2), y: top - card.height - offset },
+      { x: ((left + right) / 2) - (card.width / 2), y: bottom + offset },
+      { x: left - card.width - offset, y: ((top + bottom) / 2) - (card.height / 2) },
+      { x: right + offset, y: ((top + bottom) / 2) - (card.height / 2) },
       { x: right + offset, y: top - card.height - offset },
       { x: right + offset, y: bottom + offset },
       { x: left - card.width - offset, y: top - card.height - offset },
@@ -1975,6 +2626,18 @@ function buildMarkerCalloutCandidates(canvas, card, margin) {
     }
   }
   return candidates;
+}
+
+function ellipseIntersectsRect(marker, rect, padding = 0) {
+  const centerX = marker.box.x + (marker.box.width / 2);
+  const centerY = marker.box.y + (marker.box.height / 2);
+  const radiusX = Math.max(1, marker.radiusX + padding);
+  const radiusY = Math.max(1, marker.radiusY + padding);
+  const nearestX = clamp(centerX, rect.x, rect.x + rect.width);
+  const nearestY = clamp(centerY, rect.y, rect.y + rect.height);
+  const normalizedX = (nearestX - centerX) / radiusX;
+  const normalizedY = (nearestY - centerY) / radiusY;
+  return (normalizedX * normalizedX) + (normalizedY * normalizedY) <= 1;
 }
 
 function drawMarkerCallout(context, card) {
@@ -2011,15 +2674,12 @@ function drawMarkerCallout(context, card) {
 }
 
 function drawMarkerCalloutLeader(context, card) {
-  const centerX = card.box.x + (card.box.width / 2);
-  const centerY = card.box.y + (card.box.height / 2);
-  const targetX = clamp(centerX, card.x, card.x + card.width);
-  const targetY = clamp(centerY, card.y, card.y + card.height);
-  const dx = targetX - centerX;
-  const dy = targetY - centerY;
-  const scale = 1 / Math.max(1, Math.sqrt((dx * dx) / (card.radiusX * card.radiusX) + (dy * dy) / (card.radiusY * card.radiusY)));
-  const sourceX = centerX + (dx * scale);
-  const sourceY = centerY + (dy * scale);
+  const { sourceX, sourceY, targetX, targetY } = buildMarkerLeaderSegment(card, {
+    x: card.x,
+    y: card.y,
+    width: card.width,
+    height: card.height,
+  });
   context.save();
   context.strokeStyle = "rgba(220, 38, 38, 0.78)";
   context.lineWidth = Math.max(1, Math.round(card.fontSize * 0.1));
@@ -2030,22 +2690,50 @@ function drawMarkerCalloutLeader(context, card) {
   context.restore();
 }
 
-function createInkDensitySampler(canvas) {
-  const { data, width, height } = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height);
-  return (rect) => {
-    const step = Math.max(5, Math.round(Math.min(rect.width, rect.height) / 14));
-    let samples = 0;
-    let ink = 0;
-    for (let y = Math.max(0, Math.floor(rect.y)); y < Math.min(height, Math.ceil(rect.y + rect.height)); y += step) {
-      for (let x = Math.max(0, Math.floor(rect.x)); x < Math.min(width, Math.ceil(rect.x + rect.width)); x += step) {
-        const offset = ((y * width) + x) * 4;
-        const brightness = data[offset] + data[offset + 1] + data[offset + 2];
-        if (brightness < 690) ink += 1;
-        samples += 1;
-      }
-    }
-    return ink / Math.max(1, samples);
+function buildMarkerLeaderSegment(card, rect) {
+  const centerX = card.box.x + (card.box.width / 2);
+  const centerY = card.box.y + (card.box.height / 2);
+  const targetX = clamp(centerX, rect.x, rect.x + rect.width);
+  const targetY = clamp(centerY, rect.y, rect.y + rect.height);
+  const dx = targetX - centerX;
+  const dy = targetY - centerY;
+  const scale = 1 / Math.max(1, Math.sqrt((dx * dx) / (card.radiusX * card.radiusX) + (dy * dy) / (card.radiusY * card.radiusY)));
+  return {
+    sourceX: centerX + (dx * scale),
+    sourceY: centerY + (dy * scale),
+    targetX,
+    targetY,
   };
+}
+
+function lineIntersectsEllipse(line, marker, padding = 0) {
+  const radiusX = Math.max(1, marker.radiusX + padding);
+  const radiusY = Math.max(1, marker.radiusY + padding);
+  const centerX = marker.box.x + (marker.box.width / 2);
+  const centerY = marker.box.y + (marker.box.height / 2);
+  for (let step = 1; step < 20; step += 1) {
+    const progress = step / 20;
+    const x = line.sourceX + ((line.targetX - line.sourceX) * progress);
+    const y = line.sourceY + ((line.targetY - line.sourceY) * progress);
+    const normalizedX = (x - centerX) / radiusX;
+    const normalizedY = (y - centerY) / radiusY;
+    if ((normalizedX * normalizedX) + (normalizedY * normalizedY) <= 1) return true;
+  }
+  return false;
+}
+
+function lineIntersectsRect(line, rect, padding = 0) {
+  const left = rect.x - padding;
+  const top = rect.y - padding;
+  const right = rect.x + rect.width + padding;
+  const bottom = rect.y + rect.height + padding;
+  for (let step = 1; step < 20; step += 1) {
+    const progress = step / 20;
+    const x = line.sourceX + ((line.targetX - line.sourceX) * progress);
+    const y = line.sourceY + ((line.targetY - line.sourceY) * progress);
+    if (x >= left && x <= right && y >= top && y <= bottom) return true;
+  }
+  return false;
 }
 
 function rectFitsCanvas(rect, canvas, margin) {
@@ -2053,14 +2741,6 @@ function rectFitsCanvas(rect, canvas, margin) {
     && rect.y >= margin
     && rect.x + rect.width <= canvas.width - margin
     && rect.y + rect.height <= canvas.height - margin;
-}
-
-function rectangleIntersectionArea(first, second) {
-  const left = Math.max(first.x, second.x);
-  const top = Math.max(first.y, second.y);
-  const right = Math.min(first.x + first.width, second.x + second.width);
-  const bottom = Math.min(first.y + first.height, second.y + second.height);
-  return Math.max(0, right - left) * Math.max(0, bottom - top);
 }
 
 function wrapCanvasText(context, value, maximumWidth, maximumLines) {
@@ -2094,51 +2774,6 @@ function truncateCanvasText(context, value, maximumWidth) {
   const characters = Array.from(String(value || ""));
   while (characters.length > 1 && context.measureText(`${characters.join("")}...`).width > maximumWidth) characters.pop();
   return `${characters.join("")}...`;
-}
-
-function drawMarkerBadge(context, canvas, box, radiusX, radiusY, number, badgeSize, occupiedRects) {
-  const placement = findMarkerBadgePlacement(canvas, box, radiusX, radiusY, badgeSize, occupiedRects);
-  const fontSize = Math.max(11, Math.round(badgeSize * 0.52));
-  context.save();
-  context.fillStyle = "#dc2626";
-  context.beginPath();
-  context.arc(placement.x, placement.y, badgeSize / 2, 0, Math.PI * 2);
-  context.fill();
-  context.fillStyle = "#ffffff";
-  context.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(String(number), placement.x, placement.y + 0.5);
-  context.restore();
-}
-
-function findMarkerBadgePlacement(canvas, box, radiusX, radiusY, badgeSize, occupiedRects) {
-  const centerX = box.x + (box.width / 2);
-  const centerY = box.y + (box.height / 2);
-  const halfBadge = badgeSize / 2;
-  const inset = halfBadge + 4;
-  const candidates = [];
-  for (let ring = 0; ring < 9; ring += 1) {
-    const offset = (ring * (badgeSize + 5)) + halfBadge + 4;
-    candidates.push(
-      { x: centerX + radiusX + offset, y: centerY - radiusY - offset },
-      { x: centerX - radiusX - offset, y: centerY - radiusY - offset },
-      { x: centerX + radiusX + offset, y: centerY + radiusY + offset },
-      { x: centerX - radiusX - offset, y: centerY + radiusY + offset },
-    );
-  }
-  for (const candidate of candidates) {
-    const x = clamp(candidate.x, inset, canvas.width - inset);
-    const y = clamp(candidate.y, inset, canvas.height - inset);
-    const rect = { x: x - halfBadge, y: y - halfBadge, width: badgeSize, height: badgeSize };
-    if (!occupiedRects.some((occupied) => rectanglesOverlap(rect, occupied, 4))) {
-      occupiedRects.push(rect);
-      return { x, y };
-    }
-  }
-  const fallback = { x: clamp(centerX + radiusX + halfBadge, inset, canvas.width - inset), y: clamp(centerY - radiusY - halfBadge, inset, canvas.height - inset) };
-  occupiedRects.push({ x: fallback.x - halfBadge, y: fallback.y - halfBadge, width: badgeSize, height: badgeSize });
-  return fallback;
 }
 
 function rectanglesOverlap(first, second, padding = 0) {

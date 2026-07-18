@@ -2472,3 +2472,46 @@ button.download-link {
     padding: 10px;
   }
 }
+
+@media (max-width: 640px), (hover: none) and (pointer: coarse) {
+  html,
+  body {
+    height: auto;
+    min-height: 100%;
+  }
+
+  #app {
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .app-shell,
+  .app-card {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .mode-view {
+    overflow: visible;
+  }
+
+  .compare-workspace {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100dvh - 72px);
+    overflow: visible;
+  }
+
+  .compare-scroll-content {
+    flex: 1 0 auto;
+    overflow: visible;
+    overscroll-behavior: auto;
+  }
+}

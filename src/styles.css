@@ -729,6 +729,16 @@ td {
 }
 
 @media (max-width: 640px) {
+  .app-shell {
+    padding: 0;
+  }
+
+  .app-card {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
   .topbar {
     align-items: center;
     flex-direction: row;

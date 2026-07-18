@@ -2,6 +2,7 @@ import { createIcons, icons } from "lucide";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorkerSource from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import {
+  createGeminiImageParts,
   DEFAULT_EXHAUSTIVE_GEMINI_PROMPT,
   DEFAULT_GEMINI_PROMPT,
   reviewDocumentDifference,
@@ -54,7 +55,7 @@ export function createDocumentCompare(root, options = {}) {
     roiRenderToken: 0,
     roiSelections: new Map(),
     roiDrag: null,
-    roiTouchEditing: { left: false, right: false },
+    roiEditing: { left: false, right: false },
     promptExpanded: false,
     promptDockCollapsedHeight: 0,
     promptCollapseTimer: null,
@@ -64,6 +65,9 @@ export function createDocumentCompare(root, options = {}) {
     exhaustiveContext: "",
     geminiKey: "",
   };
+  let geminiWorker = null;
+  let geminiWorkerRequestId = 0;
+  const geminiWorkerRequests = new Map();
 
   root.innerHTML = `
     <section class="workspace compare-workspace">
@@ -73,7 +77,13 @@ export function createDocumentCompare(root, options = {}) {
             <p class="eyebrow">Document compare</p>
             <h2>เลือกเอกสาร</h2>
           </div>
-          <button class="icon-button" id="compareResetButton" type="button" title="ล้างเอกสาร" aria-label="ล้างเอกสาร"><i data-lucide="rotate-ccw"></i></button>
+          <div class="compare-header-actions">
+            <div class="compare-mode-control compare-header-mode-control" role="group" aria-label="เลือกโหมดสแกน">
+              <button class="mode-button active" id="compareModeFocused" type="button" data-mode="focused">สแกนเฉพาะสาระสำคัญ</button>
+              <button class="mode-button" id="compareModeExhaustive" type="button" data-mode="exhaustive">สแกนทั้งหมด</button>
+            </div>
+            <button class="icon-button" id="compareResetButton" type="button" title="ล้างเอกสาร" aria-label="ล้างเอกสาร"><i data-lucide="rotate-ccw"></i></button>
+          </div>
         </div>
         <div class="compare-drop-grid">
           <label class="drop-zone compact" id="compareLeftDropZone">
@@ -88,17 +98,6 @@ export function createDocumentCompare(root, options = {}) {
             <span class="drop-title">ฉบับเปรียบเทียบ</span>
             <span class="drop-subtitle" id="compareRightMeta">PDF หรือภาพ</span>
           </label>
-        </div>
-        <div class="compare-action-bar" aria-label="การตั้งค่า Gemini และโหมดสแกน">
-          <div class="compare-gemini-settings">
-            <div class="compare-mode-field">
-              <span class="compare-dock-label">โหมดสแกน</span>
-              <div class="compare-mode-control" role="group" aria-label="เลือกโหมดสแกน">
-                <button class="mode-button active" id="compareModeFocused" type="button" data-mode="focused">เฉพาะสาระสำคัญ</button>
-                <button class="mode-button" id="compareModeExhaustive" type="button" data-mode="exhaustive">ทั้งหมด</button>
-              </div>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -156,7 +155,7 @@ export function createDocumentCompare(root, options = {}) {
                   <select id="compareRoiLeftPage" aria-label="เลือกหน้าต้นฉบับสำหรับกำหนดพื้นที่"></select>
                   <button class="icon-button" id="compareRoiLeftNext" type="button" title="หน้าต้นฉบับถัดไป" aria-label="หน้าต้นฉบับถัดไป"><i data-lucide="chevron-right"></i></button>
                 </div>
-                <button class="icon-button roi-touch-edit" id="compareRoiEditLeft" type="button" title="แก้ไขพื้นที่ครอปต้นฉบับ" aria-label="แก้ไขพื้นที่ครอปต้นฉบับ" aria-pressed="false"><i data-lucide="crop"></i></button>
+                <button class="icon-button roi-edit" id="compareRoiEditLeft" type="button" title="แก้ไขพื้นที่ครอปต้นฉบับ" aria-label="แก้ไขพื้นที่ครอปต้นฉบับ" aria-pressed="false"><i data-lucide="crop"></i></button>
                 <button class="icon-button" id="compareRoiResetLeft" type="button" title="ใช้ทั้งหน้าต้นฉบับ" aria-label="ใช้ทั้งหน้าต้นฉบับ"><i data-lucide="rotate-ccw"></i></button>
                 <button class="icon-button" id="compareRoiApplyLeft" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าต้นฉบับที่เลือก"><i data-lucide="copy"></i></button>
               </div>
@@ -180,7 +179,7 @@ export function createDocumentCompare(root, options = {}) {
                   <select id="compareRoiRightPage" aria-label="เลือกหน้าฉบับเปรียบเทียบสำหรับกำหนดพื้นที่"></select>
                   <button class="icon-button" id="compareRoiRightNext" type="button" title="หน้าฉบับเปรียบเทียบถัดไป" aria-label="หน้าฉบับเปรียบเทียบถัดไป"><i data-lucide="chevron-right"></i></button>
                 </div>
-                <button class="icon-button roi-touch-edit" id="compareRoiEditRight" type="button" title="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-label="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-pressed="false"><i data-lucide="crop"></i></button>
+                <button class="icon-button roi-edit" id="compareRoiEditRight" type="button" title="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-label="แก้ไขพื้นที่ครอปฉบับเปรียบเทียบ" aria-pressed="false"><i data-lucide="crop"></i></button>
                 <button class="icon-button" id="compareRoiResetRight" type="button" title="ใช้ทั้งหน้าฉบับเปรียบเทียบ" aria-label="ใช้ทั้งหน้าฉบับเปรียบเทียบ"><i data-lucide="rotate-ccw"></i></button>
                 <button class="icon-button" id="compareRoiApplyRight" type="button" title="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก" aria-label="คัดลอกพื้นที่นี้ไปยังหน้าฉบับเปรียบเทียบที่เลือก"><i data-lucide="copy"></i></button>
               </div>
@@ -370,14 +369,16 @@ export function createDocumentCompare(root, options = {}) {
   els.roiLeftNext.addEventListener("click", () => changeRoiPage("left", 1));
   els.roiRightPrevious.addEventListener("click", () => changeRoiPage("right", -1));
   els.roiRightNext.addEventListener("click", () => changeRoiPage("right", 1));
-  els.roiEditLeft.addEventListener("click", () => toggleRoiTouchEditing("left"));
-  els.roiEditRight.addEventListener("click", () => toggleRoiTouchEditing("right"));
+  els.roiEditLeft.addEventListener("click", () => toggleRoiEditing("left"));
+  els.roiEditRight.addEventListener("click", () => toggleRoiEditing("right"));
   els.roiApplyLeft.addEventListener("click", () => applyRoiToSelectedPages("left"));
   els.roiApplyRight.addEventListener("click", () => applyRoiToSelectedPages("right"));
   els.roiResetLeft.addEventListener("click", () => resetRoi("left"));
   els.roiResetRight.addEventListener("click", () => resetRoi("right"));
   bindRoiStage("left");
   bindRoiStage("right");
+  document.addEventListener("visibilitychange", handleDocumentVisibility);
+  window.addEventListener("focus", handleWindowFocus);
   els.resultBody.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-result-id]");
     if (row) selectResult(row.dataset.resultId);
@@ -385,6 +386,16 @@ export function createDocumentCompare(root, options = {}) {
   setScanMode(state.scanMode);
   updatePromptExpandUi();
   createIcons({ icons });
+
+  function handleDocumentVisibility() {
+    if (state.processing) updateProcessingUi();
+    updateDocumentTitle();
+  }
+
+  function handleWindowFocus() {
+    if (state.processing) updateProcessingUi();
+    updateDocumentTitle();
+  }
 
   function bindFileZone(side) {
     const input = side === "left" ? els.leftInput : els.rightInput;
@@ -717,6 +728,7 @@ export function createDocumentCompare(root, options = {}) {
 
   function resetComparison() {
     state.compareToken += 1;
+    stopGeminiWorker();
     state.loadTokens.left += 1;
     state.loadTokens.right += 1;
     state.leftSource?.close();
@@ -762,8 +774,8 @@ export function createDocumentCompare(root, options = {}) {
     const documentContext = scanMode === "exhaustive" ? els.prompt.value.trim() : "";
     const userPromptIsCustom = scanMode === "focused" && state.promptIsCustom;
     if (state.promptExpanded) setPromptExpanded(false);
-    setRoiTouchEditing("left", false);
-    setRoiTouchEditing("right", false);
+    setRoiEditing("left", false);
+    setRoiEditing("right", false);
     const comparisonToken = state.compareToken + 1;
     state.compareToken = comparisonToken;
     state.processing = true;
@@ -796,7 +808,7 @@ export function createDocumentCompare(root, options = {}) {
         let gemini = null;
         setProgressValue("Gemini วิเคราะห์ " + pairLabel, completed, total);
         try {
-          gemini = normalizeGeminiReview(await reviewDocumentDifference({
+          gemini = normalizeGeminiReview(await reviewGeminiInBackground({
             leftCanvas: comparison.referenceCanvas,
             rightCanvas: comparison.comparisonCanvas,
             page: pairLabel,
@@ -806,20 +818,22 @@ export function createDocumentCompare(root, options = {}) {
             documentContext,
             userPromptIsCustom,
             textEvidence,
+            cropRegion: { left: leftRegion, right: rightRegion },
           }), scanMode, textCandidates, userPromptIsCustom);
           const rawGeminiBoxes = geminiReviewBoxes(gemini, comparison.comparisonCanvas.width, comparison.comparisonCanvas.height);
           const rawGeminiPageBoxes = mapCropBoxesToPage(rawGeminiBoxes, rightRegion, rightCanvas, comparison.comparisonCanvas);
-          geminiPageBoxes = groundGeminiBoxesToPdfText(
+          geminiPageBoxes = clipBoxesToRoi(groundGeminiBoxesToPdfText(
             gemini,
             rightTextPage,
             rightRegion,
             rightCanvas,
             rawGeminiPageBoxes,
             textCandidates,
-          );
+          ), rightRegion, rightCanvas);
         } catch (error) {
           gemini = { error: cleanGeminiText(error.message) || "Gemini review failed." };
         }
+        if (comparisonToken !== state.compareToken) return;
         const detectorBoxes = geminiPageBoxes;
         const boxes = numberMarkerBoxes(detectorBoxes);
         const annotationBoxes = groupMarkerBoxesForDisplay(boxes, rightCanvas);
@@ -868,6 +882,59 @@ export function createDocumentCompare(root, options = {}) {
         updateButtons();
       }
     }
+  }
+
+  function reviewGeminiInBackground(options) {
+    const worker = getGeminiWorker();
+    if (!worker) return reviewDocumentDifference(options);
+    const { leftCanvas, rightCanvas, ...request } = options;
+    return createGeminiImageParts(leftCanvas, rightCanvas).then(([leftImage, rightImage]) => (
+      new Promise((resolve, reject) => {
+        const id = ++geminiWorkerRequestId;
+        geminiWorkerRequests.set(id, { resolve, reject });
+        try {
+          worker.postMessage({
+            id,
+            args: { ...request, leftImage, rightImage },
+          });
+        } catch (error) {
+          geminiWorkerRequests.delete(id);
+          reject(error instanceof Error ? error : new Error("เริ่ม Gemini worker ไม่สำเร็จ"));
+        }
+      })
+    ));
+  }
+
+  function getGeminiWorker() {
+    if (geminiWorker) return geminiWorker;
+    if (typeof Worker === "undefined") return null;
+    const worker = new Worker(new URL("./geminiWorker.js", import.meta.url), { type: "module" });
+    worker.addEventListener("message", (event) => {
+      const { id, ok, result, error } = event.data || {};
+      const pending = geminiWorkerRequests.get(id);
+      if (!pending) return;
+      geminiWorkerRequests.delete(id);
+      if (ok) pending.resolve(result);
+      else pending.reject(new Error(error || "Gemini review failed."));
+    });
+    worker.addEventListener("error", (event) => {
+      const error = new Error(event.message || "Gemini worker หยุดทำงาน");
+      geminiWorkerRequests.forEach(({ reject }) => reject(error));
+      geminiWorkerRequests.clear();
+      worker.terminate();
+      if (geminiWorker === worker) geminiWorker = null;
+    });
+    geminiWorker = worker;
+    return worker;
+  }
+
+  function stopGeminiWorker() {
+    if (!geminiWorker) return;
+    geminiWorker.terminate();
+    geminiWorker = null;
+    const error = new Error("ยกเลิกการสแกน");
+    geminiWorkerRequests.forEach(({ reject }) => reject(error));
+    geminiWorkerRequests.clear();
   }
 
   function clearResults() {
@@ -1044,6 +1111,13 @@ export function createDocumentCompare(root, options = {}) {
     els.commandDock?.classList.toggle("is-processing", state.processing);
     updatePromptActionUi();
     updatePromptExpandUi();
+    updateDocumentTitle();
+  }
+
+  function updateDocumentTitle() {
+    document.title = state.processing
+      ? (document.hidden ? "กำลังทำงานเบื้องหลัง · LE PDF Scan" : "กำลังประมวลผล · LE PDF Scan")
+      : "LE PDF Scan";
   }
 
   function togglePromptExpanded() {
@@ -1285,6 +1359,7 @@ export function createDocumentCompare(root, options = {}) {
   function cancelComparison() {
     if (!state.processing) return;
     state.compareToken += 1;
+    stopGeminiWorker();
     state.processing = false;
     setProgressIdle("ยกเลิกการสแกน");
     updateProcessingUi();
@@ -1369,8 +1444,8 @@ export function createDocumentCompare(root, options = {}) {
     state.roiPages.left = null;
     state.roiPages.right = null;
     state.roiDrag = null;
-    setRoiTouchEditing("left", false);
-    setRoiTouchEditing("right", false);
+    setRoiEditing("left", false);
+    setRoiEditing("right", false);
     els.roiPanel.hidden = true;
     clearPreviewCanvas(els.roiLeftCanvas);
     clearPreviewCanvas(els.roiRightCanvas);
@@ -1398,7 +1473,7 @@ export function createDocumentCompare(root, options = {}) {
     const page = getActiveRoiPage(side);
     if (!page) return;
     state.roiSelections.delete(roiSelectionKey(side, page));
-    setRoiTouchEditing(side, false);
+    setRoiEditing(side, false);
     renderRoiSelection(side);
   }
 
@@ -1406,7 +1481,7 @@ export function createDocumentCompare(root, options = {}) {
     const select = side === "left" ? els.roiLeftPage : els.roiRightPage;
     const page = Number(select.value);
     if (!getSelectedPages(side).includes(page)) return;
-    setRoiTouchEditing(side, false);
+    setRoiEditing(side, false);
     state.roiPages[side] = page;
     void renderRoiPreviews();
   }
@@ -1417,7 +1492,7 @@ export function createDocumentCompare(root, options = {}) {
     if (!pages.length || currentIndex < 0) return;
     const nextIndex = clamp(currentIndex + offset, 0, pages.length - 1);
     if (nextIndex === currentIndex) return;
-    setRoiTouchEditing(side, false);
+    setRoiEditing(side, false);
     state.roiPages[side] = pages[nextIndex];
     void renderRoiPreviews();
   }
@@ -1525,7 +1600,7 @@ export function createDocumentCompare(root, options = {}) {
     const selection = side === "left" ? els.roiLeftSelection : els.roiRightSelection;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !state.leftSource || !state.rightSource) return;
-      if (event.pointerType === "touch" && !state.roiTouchEditing[side]) return;
+      if (!state.roiEditing[side]) return;
       const page = getActiveRoiPage(side);
       if (!page) return;
       const point = getStagePoint(stage, event);
@@ -1548,23 +1623,23 @@ export function createDocumentCompare(root, options = {}) {
     stage.addEventListener("pointercancel", (event) => finishRoiDrag(side, stage, event));
   }
 
-  function toggleRoiTouchEditing(side) {
-    setRoiTouchEditing(side, !state.roiTouchEditing[side]);
+  function toggleRoiEditing(side) {
+    setRoiEditing(side, !state.roiEditing[side]);
   }
 
-  function setRoiTouchEditing(side, editing) {
+  function setRoiEditing(side, editing) {
     const next = Boolean(editing);
     if (next) {
       const otherSide = side === "left" ? "right" : "left";
-      state.roiTouchEditing[otherSide] = false;
-      updateRoiTouchEditingUi(otherSide);
+      state.roiEditing[otherSide] = false;
+      updateRoiEditingUi(otherSide);
     }
-    state.roiTouchEditing[side] = next;
-    updateRoiTouchEditingUi(side);
+    state.roiEditing[side] = next;
+    updateRoiEditingUi(side);
   }
 
-  function updateRoiTouchEditingUi(side) {
-    const active = state.roiTouchEditing[side];
+  function updateRoiEditingUi(side) {
+    const active = state.roiEditing[side];
     const stage = side === "left" ? els.roiLeftStage : els.roiRightStage;
     const button = side === "left" ? els.roiEditLeft : els.roiEditRight;
     const documentLabel = side === "left" ? "ต้นฉบับ" : "ฉบับเปรียบเทียบ";
@@ -1687,6 +1762,18 @@ function mapCropBoxesToPage(boxes, region, pageCanvas, cropCanvas) {
     const bottom = clamp(Math.round(rect.y + ((box.y + box.height) * scaleY)), top + 1, rect.y + rect.height);
     return { ...box, x: left, y: top, width: right - left, height: bottom - top };
   });
+}
+
+function clipBoxesToRoi(boxes, region, pageCanvas) {
+  const rect = roiToPixelRect(region, pageCanvas);
+  return boxes.map((box) => {
+    const left = Math.max(rect.x, box.x);
+    const top = Math.max(rect.y, box.y);
+    const right = Math.min(rect.x + rect.width, box.x + box.width);
+    const bottom = Math.min(rect.y + rect.height, box.y + box.height);
+    if (right <= left || bottom <= top) return null;
+    return { ...box, x: left, y: top, width: right - left, height: bottom - top };
+  }).filter(Boolean);
 }
 
 function numberMarkerBoxes(boxes) {

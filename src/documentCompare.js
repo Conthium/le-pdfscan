@@ -18,6 +18,7 @@ const FULL_REGION = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
 const MIN_REGION_SIZE = 0.025;
 const MAX_VISUAL_ALIGNMENT_MISMATCH = 0.065;
 const MIN_KEYBOARD_VIEWPORT_CHANGE = 120;
+const KEYBOARD_VIEWPORT_POLL_INTERVAL = 120;
 
 function isKnownDefaultComparePrompt(value) {
   const text = String(value || "").trim();
@@ -64,6 +65,9 @@ export function createDocumentCompare(root, options = {}) {
     promptCollapseTimer: null,
     keyboardInset: 0,
     keyboardViewportFrame: 0,
+    keyboardViewportTimer: null,
+    keyboardViewportBaselineHeight: 0,
+    keyboardViewportWidth: 0,
     scanMode: "focused",
     promptIsCustom: false,
     focusedPrompt: DEFAULT_GEMINI_PROMPT,
@@ -406,6 +410,7 @@ export function createDocumentCompare(root, options = {}) {
   document.addEventListener("focusout", scheduleKeyboardViewportSync);
   window.addEventListener("resize", scheduleKeyboardViewportSync);
   window.addEventListener("orientationchange", scheduleKeyboardViewportSync);
+  window.addEventListener("pageshow", scheduleKeyboardViewportSync);
   window.visualViewport?.addEventListener("resize", scheduleKeyboardViewportSync);
   window.visualViewport?.addEventListener("scroll", scheduleKeyboardViewportSync);
   document.addEventListener("keydown", handlePreviewKeydown);
@@ -421,11 +426,13 @@ export function createDocumentCompare(root, options = {}) {
   function handleDocumentVisibility() {
     if (state.processing) updateProcessingUi();
     updateDocumentTitle();
+    scheduleKeyboardViewportSync();
   }
 
   function handleWindowFocus() {
     if (state.processing) updateProcessingUi();
     updateDocumentTitle();
+    scheduleKeyboardViewportSync();
   }
 
   function handlePreviewKeydown(event) {
@@ -445,25 +452,76 @@ export function createDocumentCompare(root, options = {}) {
   function syncKeyboardViewport() {
     const dock = els.commandDock;
     const viewport = window.visualViewport;
-    if (!dock || !viewport) return;
+    if (!dock) return;
+    if (!viewport) {
+      resetKeyboardViewport(dock);
+      return;
+    }
 
+    const viewportTop = Math.max(0, viewport.offsetTop);
+    const viewportBottom = viewport.height + viewportTop;
     const layoutHeight = Math.max(
       window.innerHeight || 0,
       document.documentElement.clientHeight || 0,
+      viewportBottom,
     );
-    const visibleBottom = viewport.height + viewport.offsetTop;
-    const rawInset = layoutHeight - visibleBottom;
-    const keyboardInset = rawInset > MIN_KEYBOARD_VIEWPORT_CHANGE
-      ? Math.round(Math.min(layoutHeight, Math.max(0, rawInset)))
-      : 0;
+    const viewportWidth = Math.max(1, Math.round(viewport.width));
+    const widthChanged = state.keyboardViewportWidth
+      && Math.abs(viewportWidth - state.keyboardViewportWidth) > 48;
+    if (!state.keyboardViewportBaselineHeight || widthChanged) {
+      state.keyboardViewportBaselineHeight = layoutHeight;
+    }
+    state.keyboardViewportWidth = viewportWidth;
 
-    dock.style.setProperty("--compare-layout-height", `${layoutHeight}px`);
-    dock.style.setProperty("--compare-viewport-top", `${Math.max(0, Math.round(viewport.offsetTop))}px`);
-    dock.style.setProperty("--compare-viewport-height", `${Math.max(1, Math.round(viewport.height))}px`);
-    if (keyboardInset === state.keyboardInset) return;
+    const rawInset = state.keyboardViewportBaselineHeight - viewportBottom;
+    const keyboardOpen = isKeyboardInputActive() && rawInset > MIN_KEYBOARD_VIEWPORT_CHANGE;
+    if (!keyboardOpen) {
+      state.keyboardViewportBaselineHeight = Math.max(
+        state.keyboardViewportBaselineHeight,
+        layoutHeight,
+        viewportBottom,
+      );
+      resetKeyboardViewport(dock);
+      return;
+    }
+
+    const keyboardInset = Math.round(Math.min(
+      state.keyboardViewportBaselineHeight,
+      Math.max(0, rawInset),
+    ));
     state.keyboardInset = keyboardInset;
+    dock.style.setProperty("--compare-viewport-top", `${Math.round(viewportTop)}px`);
     dock.style.setProperty("--compare-keyboard-inset", `${keyboardInset}px`);
-    dock.classList.toggle("keyboard-open", keyboardInset > 0);
+    dock.classList.add("keyboard-open");
+    scheduleKeyboardViewportMonitor();
+  }
+
+  function isKeyboardInputActive() {
+    const active = document.activeElement;
+    return Boolean(active?.isContentEditable || active?.matches?.(
+      'input:not([type="file"]):not([type="checkbox"]):not([type="radio"]), textarea, select',
+    ));
+  }
+
+  function scheduleKeyboardViewportMonitor() {
+    if (state.keyboardViewportTimer) return;
+    state.keyboardViewportTimer = window.setTimeout(() => {
+      state.keyboardViewportTimer = null;
+      if (state.keyboardInset > 0) syncKeyboardViewport();
+    }, KEYBOARD_VIEWPORT_POLL_INTERVAL);
+  }
+
+  function resetKeyboardViewport(dock = els.commandDock) {
+    if (state.keyboardViewportTimer) {
+      window.clearTimeout(state.keyboardViewportTimer);
+      state.keyboardViewportTimer = null;
+    }
+    state.keyboardInset = 0;
+    dock?.classList.remove("keyboard-open");
+    dock?.style.removeProperty("--compare-keyboard-inset");
+    dock?.style.removeProperty("--compare-viewport-top");
+    dock?.style.removeProperty("--compare-viewport-height");
+    dock?.style.removeProperty("--compare-layout-height");
   }
 
   function bindFileZone(side) {

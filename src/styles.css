@@ -1604,7 +1604,7 @@ button.download-link {
 .compare-command-dock {
   position: fixed;
   right: max(12px, env(safe-area-inset-right));
-  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
+  bottom: max(12px, env(safe-area-inset-bottom));
   left: max(12px, env(safe-area-inset-left));
   z-index: 20;
   width: min(820px, calc(100% - 24px));
@@ -1627,27 +1627,36 @@ button.download-link {
     box-shadow 260ms ease;
 }
 
+.compare-command-dock.keyboard-open {
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
+}
+
 .compare-command-dock.prompt-expanded {
   display: flex;
   flex-direction: column;
-  top: calc(var(--compare-viewport-top, 0px) + 8px);
+  top: 8px;
   right: 8px;
-  bottom: calc(8px + var(--compare-keyboard-inset, 0px));
+  bottom: 8px;
   left: 8px;
   width: auto;
   margin: 0;
-  height: calc(var(--compare-viewport-height, var(--compare-layout-height, 100dvh)) - 16px);
-  max-height: calc(var(--compare-viewport-height, var(--compare-layout-height, 100dvh)) - 16px);
+  height: auto;
+  max-height: none;
   padding: 16px;
   border-radius: 8px;
   overflow: hidden;
   animation: prompt-dock-expand 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.compare-command-dock.prompt-expanded.keyboard-open {
+  top: calc(var(--compare-viewport-top, 0px) + 8px);
+  bottom: calc(8px + var(--compare-keyboard-inset, 0px));
+}
+
 .compare-command-dock.prompt-collapsing {
   top: auto;
   right: max(12px, env(safe-area-inset-right));
-  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
+  bottom: max(12px, env(safe-area-inset-bottom));
   left: max(12px, env(safe-area-inset-left));
   width: min(820px, calc(100% - 24px));
   margin: 0 auto;
@@ -1655,6 +1664,10 @@ button.download-link {
   max-height: var(--prompt-dock-collapsed-height);
   border-radius: 10px;
   animation: prompt-dock-collapse 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.compare-command-dock.prompt-collapsing.keyboard-open {
+  bottom: calc(max(12px, env(safe-area-inset-bottom)) + var(--compare-keyboard-inset, 0px));
 }
 
 @keyframes prompt-dock-expand {
@@ -1665,7 +1678,6 @@ button.download-link {
     transform-origin: bottom center;
   }
   to {
-    height: calc(var(--compare-viewport-height, var(--compare-layout-height, 100dvh)) - 16px);
     opacity: 1;
     transform: translateY(0) scaleY(1);
     transform-origin: bottom center;
@@ -1674,7 +1686,6 @@ button.download-link {
 
 @keyframes prompt-dock-collapse {
   from {
-    height: calc(var(--compare-viewport-height, var(--compare-layout-height, 100dvh)) - 16px);
     opacity: 1;
     transform: translateY(0) scaleY(1);
     transform-origin: bottom center;

@@ -48,6 +48,8 @@ export function createDocumentCompare(root, options = {}) {
     results: [],
     selectedResultId: null,
     previewUrl: null,
+    previewFullscreen: false,
+    previewZoom: 1,
     pageSelection: { left: new Set(), right: new Set() },
     pageSelectionAnchors: { left: null, right: null },
     pagePickerToken: 0,
@@ -221,7 +223,15 @@ export function createDocumentCompare(root, options = {}) {
           <div class="compare-preview-panel">
             <div class="preview-heading">
               <div><p class="eyebrow">Preview</p><h3 id="comparePreviewTitle">ภาพผลลัพธ์</h3></div>
-              <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลด PDF หน้านี้" disabled><i data-lucide="download"></i></button>
+              <div class="preview-heading-actions">
+                <div class="preview-zoom-controls" id="comparePreviewZoomControls" aria-label="ควบคุมการซูมภาพ">
+                  <button class="icon-button" id="comparePreviewZoomOut" type="button" title="ย่อภาพ" aria-label="ย่อภาพ" disabled><i data-lucide="zoom-out"></i></button>
+                  <button class="preview-zoom-reset" id="comparePreviewZoomReset" type="button" title="รีเซ็ตการซูม" aria-label="รีเซ็ตการซูม"><span id="comparePreviewZoomLabel">100%</span></button>
+                  <button class="icon-button" id="comparePreviewZoomIn" type="button" title="ขยายภาพ" aria-label="ขยายภาพ" disabled><i data-lucide="zoom-in"></i></button>
+                </div>
+                <button class="icon-button" id="compareTogglePreviewFullscreen" type="button" title="ดูภาพเต็มจอ" aria-label="ดูภาพเต็มจอ" disabled><i data-lucide="maximize-2"></i></button>
+                <button class="icon-button" id="compareDownloadCurrent" type="button" title="ดาวน์โหลด PDF หน้านี้" disabled><i data-lucide="download"></i></button>
+              </div>
             </div>
             <div class="compare-preview-content">
               <div class="text-difference-panel" id="compareTextDifferencePanel" hidden>
@@ -317,9 +327,15 @@ export function createDocumentCompare(root, options = {}) {
     pageCount: root.querySelector("#comparePageCount"),
     changedPageCount: root.querySelector("#compareChangedPageCount"),
     differenceCount: root.querySelector("#compareDifferenceCount"),
+    previewPanel: root.querySelector(".compare-preview-panel"),
     previewTitle: root.querySelector("#comparePreviewTitle"),
     previewImage: root.querySelector("#comparePreviewImage"),
     previewEmpty: root.querySelector("#comparePreviewEmpty"),
+    togglePreviewFullscreen: root.querySelector("#compareTogglePreviewFullscreen"),
+    previewZoomOut: root.querySelector("#comparePreviewZoomOut"),
+    previewZoomReset: root.querySelector("#comparePreviewZoomReset"),
+    previewZoomIn: root.querySelector("#comparePreviewZoomIn"),
+    previewZoomLabel: root.querySelector("#comparePreviewZoomLabel"),
     downloadCurrent: root.querySelector("#compareDownloadCurrent"),
     textDifferencePanel: root.querySelector("#compareTextDifferencePanel"),
     textDifferenceList: root.querySelector("#compareTextDifferenceList"),
@@ -353,6 +369,10 @@ export function createDocumentCompare(root, options = {}) {
   els.resetButton.addEventListener("click", resetComparison);
   els.downloadPdf.addEventListener("click", downloadComparedPdf);
   els.downloadCurrent.addEventListener("click", downloadCurrentComparisonPdf);
+  els.togglePreviewFullscreen.addEventListener("click", togglePreviewFullscreen);
+  els.previewZoomOut.addEventListener("click", () => setPreviewZoom(state.previewZoom - 0.25));
+  els.previewZoomReset.addEventListener("click", () => setPreviewZoom(1));
+  els.previewZoomIn.addEventListener("click", () => setPreviewZoom(state.previewZoom + 0.25));
   els.modeFocused.addEventListener("click", () => setScanMode("focused"));
   els.modeExhaustive.addEventListener("click", () => setScanMode("exhaustive"));
   els.expandPrompt.addEventListener("click", togglePromptExpanded);
@@ -388,6 +408,7 @@ export function createDocumentCompare(root, options = {}) {
   window.addEventListener("orientationchange", scheduleKeyboardViewportSync);
   window.visualViewport?.addEventListener("resize", scheduleKeyboardViewportSync);
   window.visualViewport?.addEventListener("scroll", scheduleKeyboardViewportSync);
+  document.addEventListener("keydown", handlePreviewKeydown);
   els.resultBody.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-result-id]");
     if (row) selectResult(row.dataset.resultId);
@@ -405,6 +426,12 @@ export function createDocumentCompare(root, options = {}) {
   function handleWindowFocus() {
     if (state.processing) updateProcessingUi();
     updateDocumentTitle();
+  }
+
+  function handlePreviewKeydown(event) {
+    if (event.key !== "Escape" || !state.previewFullscreen) return;
+    event.preventDefault();
+    setPreviewFullscreen(false);
   }
 
   function scheduleKeyboardViewportSync() {
@@ -982,6 +1009,8 @@ export function createDocumentCompare(root, options = {}) {
   function clearResults() {
     state.results = [];
     state.selectedResultId = null;
+    setPreviewFullscreen(false);
+    setPreviewZoom(1);
     revokePreviewUrl();
     els.resultsPanel.hidden = true;
     els.downloadPdf.disabled = true;
@@ -1026,11 +1055,13 @@ export function createDocumentCompare(root, options = {}) {
     const row = state.results.find((result) => result.id === resultId);
     if (!row) return;
     state.selectedResultId = resultId;
+    setPreviewZoom(1);
     renderResults();
     renderTextFindings(row.markerFindings);
     revokePreviewUrl();
     els.previewTitle.textContent = describePagePair(row);
     if (!row.imageBlob) {
+      setPreviewFullscreen(false);
       els.previewImage.hidden = true;
       els.previewEmpty.hidden = false;
       els.previewEmpty.textContent = "ไม่พบจุดต่างในคู่หน้านี้";
@@ -1042,6 +1073,51 @@ export function createDocumentCompare(root, options = {}) {
     els.previewImage.hidden = false;
     els.previewEmpty.hidden = true;
     els.downloadCurrent.disabled = false;
+    updatePreviewFullscreenUi();
+  }
+
+  function togglePreviewFullscreen() {
+    setPreviewFullscreen(!state.previewFullscreen);
+  }
+
+  function setPreviewFullscreen(fullscreen) {
+    const row = state.results.find((result) => result.id === state.selectedResultId);
+    const next = Boolean(fullscreen) && Boolean(row?.imageBlob);
+    state.previewFullscreen = next;
+    els.previewPanel.classList.toggle("is-fullscreen", next);
+    document.body.classList.toggle("compare-preview-fullscreen", next);
+    if (!next) setPreviewZoom(1);
+    updatePreviewFullscreenUi();
+  }
+
+  function updatePreviewFullscreenUi() {
+    const row = state.results.find((result) => result.id === state.selectedResultId);
+    const canView = Boolean(row?.imageBlob) && !els.previewImage.hidden;
+    els.togglePreviewFullscreen.disabled = !canView;
+    els.togglePreviewFullscreen.title = state.previewFullscreen ? "ออกจากโหมดเต็มจอ" : "ดูภาพเต็มจอ";
+    els.togglePreviewFullscreen.setAttribute("aria-label", state.previewFullscreen ? "ออกจากโหมดเต็มจอ" : "ดูภาพเต็มจอ");
+    setPreviewFullscreenIcon(state.previewFullscreen ? "minimize-2" : "maximize-2");
+    setPreviewZoom(state.previewZoom);
+  }
+
+  function setPreviewFullscreenIcon(iconName) {
+    const currentIcon = els.togglePreviewFullscreen.querySelector("svg");
+    if (currentIcon?.getAttribute("data-lucide") === iconName) return;
+    els.togglePreviewFullscreen.innerHTML = `<i data-lucide="${iconName}"></i>`;
+    createIcons({ icons });
+  }
+
+  function setPreviewZoom(value) {
+    const zoom = clamp(Number(value) || 1, 0.75, 3);
+    state.previewZoom = zoom;
+    els.previewZoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+    els.previewZoomOut.disabled = !state.previewFullscreen || zoom <= 0.75;
+    els.previewZoomIn.disabled = !state.previewFullscreen || zoom >= 3;
+    if (state.previewFullscreen && !els.previewImage.hidden) {
+      els.previewImage.style.width = `${Math.round(zoom * 100)}%`;
+    } else {
+      els.previewImage.style.removeProperty("width");
+    }
   }
 
   async function downloadComparedPdf() {

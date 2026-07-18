@@ -19,6 +19,7 @@ const MIN_REGION_SIZE = 0.025;
 const MAX_VISUAL_ALIGNMENT_MISMATCH = 0.065;
 const MIN_KEYBOARD_VIEWPORT_CHANGE = 120;
 const KEYBOARD_VIEWPORT_POLL_INTERVAL = 120;
+const PROMPT_VIEWPORT_RECOVERY_TIMEOUT = 1600;
 
 function isKnownDefaultComparePrompt(value) {
   const text = String(value || "").trim();
@@ -63,6 +64,9 @@ export function createDocumentCompare(root, options = {}) {
     promptExpanded: false,
     promptDockCollapsedHeight: 0,
     promptCollapseTimer: null,
+    promptPageScrollLock: null,
+    promptViewportRecoveryPending: false,
+    promptViewportRecoveryTimer: null,
     keyboardInset: 0,
     keyboardViewportFrame: 0,
     keyboardViewportTimer: null,
@@ -455,6 +459,7 @@ export function createDocumentCompare(root, options = {}) {
     if (!dock) return;
     if (!viewport) {
       resetKeyboardViewport(dock);
+      finishPromptViewportRecovery();
       return;
     }
 
@@ -474,7 +479,8 @@ export function createDocumentCompare(root, options = {}) {
     state.keyboardViewportWidth = viewportWidth;
 
     const rawInset = state.keyboardViewportBaselineHeight - viewportBottom;
-    const keyboardOpen = isKeyboardInputActive() && rawInset > MIN_KEYBOARD_VIEWPORT_CHANGE;
+    const keyboardOpen = rawInset > MIN_KEYBOARD_VIEWPORT_CHANGE
+      && (isKeyboardInputActive() || state.keyboardInset > 0 || state.promptViewportRecoveryPending);
     if (!keyboardOpen) {
       state.keyboardViewportBaselineHeight = Math.max(
         state.keyboardViewportBaselineHeight,
@@ -482,6 +488,7 @@ export function createDocumentCompare(root, options = {}) {
         viewportBottom,
       );
       resetKeyboardViewport(dock);
+      finishPromptViewportRecovery();
       return;
     }
 
@@ -507,7 +514,7 @@ export function createDocumentCompare(root, options = {}) {
     if (state.keyboardViewportTimer) return;
     state.keyboardViewportTimer = window.setTimeout(() => {
       state.keyboardViewportTimer = null;
-      if (state.keyboardInset > 0) syncKeyboardViewport();
+      if (state.keyboardInset > 0 || state.promptViewportRecoveryPending) syncKeyboardViewport();
     }, KEYBOARD_VIEWPORT_POLL_INTERVAL);
   }
 
@@ -522,6 +529,83 @@ export function createDocumentCompare(root, options = {}) {
     dock?.style.removeProperty("--compare-viewport-top");
     dock?.style.removeProperty("--compare-viewport-height");
     dock?.style.removeProperty("--compare-layout-height");
+  }
+
+  function lockPromptPageScroll() {
+    cancelPromptViewportRecovery();
+    if (state.promptPageScrollLock) return;
+
+    const body = document.body;
+    const scrollbarWidth = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+    const currentPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
+    state.promptPageScrollLock = {
+      x: window.scrollX,
+      y: window.scrollY,
+      styles: {
+        position: body.style.position,
+        top: body.style.top,
+        right: body.style.right,
+        bottom: body.style.bottom,
+        left: body.style.left,
+        width: body.style.width,
+        overflow: body.style.overflow,
+        paddingRight: body.style.paddingRight,
+      },
+    };
+
+    body.style.position = "fixed";
+    body.style.top = `-${state.promptPageScrollLock.y}px`;
+    body.style.right = "0";
+    body.style.bottom = "auto";
+    body.style.left = "0";
+    body.style.width = "100%";
+    body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      body.style.paddingRight = `${currentPaddingRight + scrollbarWidth}px`;
+    }
+  }
+
+  function beginPromptViewportRecovery() {
+    if (!state.promptPageScrollLock) return;
+    state.promptViewportRecoveryPending = true;
+    if (state.promptViewportRecoveryTimer) {
+      window.clearTimeout(state.promptViewportRecoveryTimer);
+    }
+    state.promptViewportRecoveryTimer = window.setTimeout(() => {
+      resetKeyboardViewport();
+      finishPromptViewportRecovery();
+    }, PROMPT_VIEWPORT_RECOVERY_TIMEOUT);
+    scheduleKeyboardViewportSync();
+    scheduleKeyboardViewportMonitor();
+  }
+
+  function cancelPromptViewportRecovery() {
+    state.promptViewportRecoveryPending = false;
+    if (!state.promptViewportRecoveryTimer) return;
+    window.clearTimeout(state.promptViewportRecoveryTimer);
+    state.promptViewportRecoveryTimer = null;
+  }
+
+  function finishPromptViewportRecovery() {
+    if (!state.promptViewportRecoveryPending || !state.promptPageScrollLock) return;
+
+    const lock = state.promptPageScrollLock;
+    const body = document.body;
+    const { styles } = lock;
+    cancelPromptViewportRecovery();
+    state.promptPageScrollLock = null;
+    body.style.position = styles.position;
+    body.style.top = styles.top;
+    body.style.right = styles.right;
+    body.style.bottom = styles.bottom;
+    body.style.left = styles.left;
+    body.style.width = styles.width;
+    body.style.overflow = styles.overflow;
+    body.style.paddingRight = styles.paddingRight;
+
+    const restoreScroll = () => window.scrollTo(lock.x, lock.y);
+    restoreScroll();
+    window.requestAnimationFrame(restoreScroll);
   }
 
   function bindFileZone(side) {
@@ -1310,12 +1394,14 @@ export function createDocumentCompare(root, options = {}) {
       state.promptCollapseTimer = null;
     }
     if (next) {
+      lockPromptPageScroll();
       state.promptDockCollapsedHeight = dock.getBoundingClientRect().height;
       state.promptExpanded = true;
       dock.classList.remove("prompt-collapsing");
       dock.style.setProperty("--prompt-dock-collapsed-height", `${Math.round(state.promptDockCollapsedHeight)}px`);
       dock.classList.add("prompt-expanded");
     } else {
+      if (document.activeElement === els.prompt) els.prompt.blur();
       state.promptExpanded = false;
       const collapsedHeight = Math.max(1, Math.round(state.promptDockCollapsedHeight || dock.getBoundingClientRect().height));
       dock.style.setProperty("--prompt-dock-collapsed-height", `${collapsedHeight}px`);
@@ -1327,10 +1413,18 @@ export function createDocumentCompare(root, options = {}) {
         dock.style.removeProperty("--prompt-dock-collapsed-height");
         state.promptCollapseTimer = null;
       }, 280);
+      beginPromptViewportRecovery();
     }
     updatePromptExpandUi();
     if (state.promptExpanded) {
-      window.requestAnimationFrame(() => els.prompt.focus());
+      window.requestAnimationFrame(() => {
+        try {
+          els.prompt.focus({ preventScroll: true });
+        } catch {
+          els.prompt.focus();
+        }
+        scheduleKeyboardViewportSync();
+      });
     }
   }
 

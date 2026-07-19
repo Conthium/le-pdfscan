@@ -280,6 +280,7 @@ export function createDocumentCompare(root, options = {}) {
   `;
 
   const els = {
+    workspace: root.querySelector(".compare-workspace"),
     leftInput: root.querySelector("#compareLeftInput"),
     rightInput: root.querySelector("#compareRightInput"),
     leftDropZone: root.querySelector("#compareLeftDropZone"),
@@ -357,6 +358,18 @@ export function createDocumentCompare(root, options = {}) {
     roiLeftSelection: root.querySelector("#compareRoiLeftSelection"),
     roiRightSelection: root.querySelector("#compareRoiRightSelection"),
   };
+
+  const commandDockResizeObserver = typeof ResizeObserver === "function"
+    ? new ResizeObserver(([entry]) => {
+      const borderBox = entry?.borderBoxSize;
+      const blockSize = Array.isArray(borderBox)
+        ? borderBox[0]?.blockSize
+        : borderBox?.blockSize;
+      const height = blockSize || entry?.contentRect?.height || els.commandDock?.offsetHeight || 0;
+      if (height > 0) els.workspace?.style.setProperty("--compare-dock-height", `${Math.ceil(height)}px`);
+    })
+    : null;
+  commandDockResizeObserver?.observe(els.commandDock);
 
   restoreGeminiSettings();
   bindFileZone("left");

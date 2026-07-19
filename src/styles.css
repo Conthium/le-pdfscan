@@ -1554,7 +1554,7 @@ button.download-link {
   height: 100%;
   min-height: 0;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-areas: none;
   gap: 0;
   padding: 0;
@@ -1562,12 +1562,14 @@ button.download-link {
 }
 
 .compare-scroll-content {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   min-height: 0;
   gap: 16px;
-  padding: 24px;
+  padding: 24px 24px calc(var(--compare-dock-height, 176px) + 36px);
   background: #ffffff;
   overflow-x: hidden;
   overflow-y: auto;
@@ -1677,6 +1679,10 @@ button.download-link {
 .compare-command-dock {
   position: relative;
   z-index: 20;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: end;
+  justify-self: center;
   width: min(820px, calc(100% - 48px));
   margin: 10px auto max(12px, env(safe-area-inset-bottom));
   padding: 10px 12px;
@@ -2275,7 +2281,7 @@ button.download-link {
 
 @media (max-width: 980px) {
   .compare-scroll-content {
-    padding: 20px;
+    padding: 20px 20px calc(var(--compare-dock-height, 176px) + 32px);
   }
 
   .compare-command-dock {
@@ -2321,7 +2327,7 @@ button.download-link {
 @media (max-width: 640px) {
   .compare-scroll-content {
     gap: 12px;
-    padding: 16px;
+    padding: 16px 16px calc(var(--compare-dock-height, 176px) + 28px);
   }
 
   .compare-setup {

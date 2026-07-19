@@ -74,4 +74,8 @@ createDocumentCompare(compareView, {
   geminiDialogSave: document.querySelector("#geminiDialogSave"),
 });
 
+const appHeader = document.querySelector(".topbar");
+const compareScrollContent = compareView.querySelector(".compare-scroll-content");
+if (appHeader && compareScrollContent) compareScrollContent.prepend(appHeader);
+
 createIcons({ icons });

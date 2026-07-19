@@ -68,6 +68,7 @@ export function createDocumentCompare(root, options = {}) {
   let geminiWorker = null;
   let geminiWorkerRequestId = 0;
   const geminiWorkerRequests = new Map();
+  let previewResizeFrame = 0;
 
   root.innerHTML = `
     <section class="workspace compare-workspace">
@@ -370,6 +371,7 @@ export function createDocumentCompare(root, options = {}) {
   els.previewZoomOut.addEventListener("click", () => setPreviewZoom(state.previewZoom - 0.25));
   els.previewZoomReset.addEventListener("click", () => setPreviewZoom(1));
   els.previewZoomIn.addEventListener("click", () => setPreviewZoom(state.previewZoom + 0.25));
+  els.previewImage.addEventListener("load", schedulePreviewImageFit);
   els.modeFocused.addEventListener("click", () => setScanMode("focused"));
   els.modeExhaustive.addEventListener("click", () => setScanMode("exhaustive"));
   els.expandPrompt.addEventListener("click", togglePromptExpanded);
@@ -399,6 +401,7 @@ export function createDocumentCompare(root, options = {}) {
   bindRoiStage("right");
   document.addEventListener("visibilitychange", handleDocumentVisibility);
   window.addEventListener("focus", handleWindowFocus);
+  window.addEventListener("resize", schedulePreviewImageFit);
   document.addEventListener("keydown", handlePreviewKeydown);
   els.resultBody.addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-result-id]");
@@ -1071,11 +1074,40 @@ export function createDocumentCompare(root, options = {}) {
     els.previewZoomLabel.textContent = `${Math.round(zoom * 100)}%`;
     els.previewZoomOut.disabled = !state.previewFullscreen || zoom <= 0.75;
     els.previewZoomIn.disabled = !state.previewFullscreen || zoom >= 3;
-    if (state.previewFullscreen && !els.previewImage.hidden) {
-      els.previewImage.style.width = `${Math.round(zoom * 100)}%`;
-    } else {
-      els.previewImage.style.removeProperty("width");
+    applyPreviewImageSize();
+    schedulePreviewImageFit();
+  }
+
+  function schedulePreviewImageFit() {
+    if (previewResizeFrame) cancelAnimationFrame(previewResizeFrame);
+    previewResizeFrame = requestAnimationFrame(() => {
+      previewResizeFrame = 0;
+      applyPreviewImageSize();
+    });
+  }
+
+  function applyPreviewImageSize() {
+    const image = els.previewImage;
+    if (!state.previewFullscreen || image.hidden || !image.naturalWidth || !image.naturalHeight) {
+      image.style.removeProperty("width");
+      image.style.removeProperty("height");
+      return;
     }
+
+    const viewport = image.closest(".preview-canvas-wrap");
+    if (!viewport) return;
+    const viewportStyle = getComputedStyle(viewport);
+    const horizontalPadding = parseFloat(viewportStyle.paddingLeft) + parseFloat(viewportStyle.paddingRight);
+    const verticalPadding = parseFloat(viewportStyle.paddingTop) + parseFloat(viewportStyle.paddingBottom);
+    const availableWidth = Math.max(1, viewport.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(1, viewport.clientHeight - verticalPadding);
+    const fitScale = Math.min(
+      availableWidth / image.naturalWidth,
+      availableHeight / image.naturalHeight,
+    );
+
+    image.style.width = `${Math.max(1, image.naturalWidth * fitScale * state.previewZoom)}px`;
+    image.style.height = `${Math.max(1, image.naturalHeight * fitScale * state.previewZoom)}px`;
   }
 
   async function downloadComparedPdf() {

@@ -1542,10 +1542,10 @@ button.download-link {
 }
 
 .compare-scroll-content {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   min-height: 0;
-  align-content: start;
-  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   padding: 24px;
   overflow-x: hidden;
@@ -1553,6 +1553,10 @@ button.download-link {
   overscroll-behavior: contain;
   touch-action: pan-x pan-y pinch-zoom;
   -webkit-overflow-scrolling: touch;
+}
+
+.compare-scroll-content > * {
+  flex: 0 0 auto;
 }
 
 .compare-setup,

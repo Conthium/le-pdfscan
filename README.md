@@ -1,160 +1,174 @@
 # LE PDF Scan
 
-[English](README.md) | [ภาษาไทย](README.th.md)
+ภาษาไทย (หน้านี้) | [English](README.en.md)
 
-LE PDF Scan is an internal document-review tool for comparing two PDF documents or images. The current web application is focused on **Document Compare**. It runs in the browser, can optionally ask Gemini to review business-content changes, and exports one annotated PDF for follow-up work.
+LE PDF Scan คือเครื่องมือภายในสำหรับเปรียบเทียบเอกสาร PDF หรือรูปภาพสองฉบับ เว็บแอปในปัจจุบันเน้นฟีเจอร์ **Document Compare** ซึ่งทำงานในเบราว์เซอร์ สามารถใช้ Gemini ช่วยตรวจสอบความต่างเชิงเนื้อหา และส่งออกเป็น PDF ที่ใส่คำอธิบายไว้แล้วเพื่อนำไปทำงานต่อได้
 
-This README is written as a handoff guide. Read the **Current Status** section before changing code: the repository still contains a separate OpenCV Priority Count system, but that system is intentionally hidden from the current web UI.
+เอกสารนี้เขียนขึ้นเพื่อส่งต่องานให้ผู้ดูแลคนถัดไป โปรดอ่านหัวข้อ **สถานะปัจจุบัน** ก่อนแก้โค้ด เพราะใน repository ยังมีระบบ OpenCV Priority Count อยู่ แต่ตั้งใจซ่อนไว้จากหน้าเว็บปัจจุบัน
 
-## Current Status
+## สถานะปัจจุบัน
 
-| Workstream | Status | Where it runs | Main code |
+| ส่วนงาน | สถานะ | ทำงานที่ใด | โค้ดหลัก |
 | --- | --- | --- | --- |
-| Document Compare | Active in the web UI | Browser + direct Gemini API call using the user's saved key | `src/documentCompare.js`, `src/pdfTextDiff.js`, `src/gemini.js` |
-| Gemini semantic review | Required to compare documents | Browser calls Gemini directly with the key entered by that user; no server proxy or build-time key | `src/gemini.js` |
-| Priority Count / colored-marker scan | Paused and not shown in the UI | Separate Python/FastAPI service | `src/priorityScan.js`, `server_scanner.py`, `scripts/` |
+| Document Compare | ใช้งานอยู่บนหน้าเว็บ | เบราว์เซอร์ + เรียก Gemini โดยตรงด้วย key ของผู้ใช้ | `src/documentCompare.js`, `src/pdfTextDiff.js`, `src/gemini.js` |
+| Gemini semantic review | ต้องใช้เพื่อเปรียบเทียบเอกสาร | เบราว์เซอร์เรียก Gemini โดยตรงด้วย key ที่ผู้ใช้กรอก ไม่มี server proxy หรือ key ใน build | `src/gemini.js` |
+| Priority Count / การสแกน marker สี | พักไว้และไม่แสดงใน UI | Python/FastAPI service แยกต่างหาก | `src/priorityScan.js`, `server_scanner.py`, `scripts/` |
 
-`src/main.js` imports only `createDocumentCompare(...)`. That is why the public page currently opens directly to Document Compare and no longer shows Priority Scan.
+`src/main.js` import เพียง `createDocumentCompare(...)` เท่านั้น นี่คือเหตุผลที่หน้าเว็บเปิดมาที่ Document Compare โดยตรงและไม่มี Priority Scan แล้ว
 
-> `"private": true` in `package.json` only prevents accidental publishing to npm. It does **not** control whether the GitHub repository is private or public.
+> ค่า `"private": true` ใน `package.json` มีหน้าที่ป้องกันการ publish package ไป npm โดยไม่ตั้งใจเท่านั้น ไม่ได้กำหนดว่า GitHub repository จะเป็น private หรือ public
 
-## What A User Does Today
+## วิธีใช้สำหรับผู้ใช้งานปัจจุบัน
 
-1. Upload a **ต้นฉบับ** (reference) file on the left and an **ฉบับเปรียบเทียบ** (revised) file on the right. Supported inputs are PDF, PNG, JPG, and WEBP.
-2. Select the pages to compare. All pages are selected initially. Click thumbnails, Shift-click a range, or enter a range such as `1,5-8`.
-3. Set a comparison area for each document page if only part of a page matters. Each side has its own page picker, `< >` navigation, and eight crop handles. The copy button applies the current crop only to the selected pages of that same document. On touch devices, the preview starts in scroll mode: tap the Crop button on the relevant side before editing. The touch hit areas are larger than the visible handles, and the adjacent reset button stays disabled until a custom crop exists.
-4. Choose **สแกนเฉพาะสาระสำคัญ** or **สแกนทั้งหมด** from the compact selector in the Document Compare header. Focused mode exposes an editable Thai policy prompt, and that user prompt becomes the primary scope. The all-content mode keeps its all-differences policy locked; the same field becomes optional document context used only to explain document roles, field mappings, terminology, units, or equivalent formats. The focused prompt and exhaustive context are stored separately and never overwrite each other.
-5. Click **Gemini** in the top-right header, enter an API key in the dialog, and save it. It is masked and stored in that browser's `localStorage`; the key is not written to the repository or sent to this app's server.
-6. Review the list of differences and the annotated preview. Click **ดาวน์โหลด** to get one combined PDF containing the revised/right-hand pages in the selected comparison order.
+1. อัปโหลดไฟล์ **ต้นฉบับ** (reference) ทางซ้าย และ **ฉบับเปรียบเทียบ** (revised) ทางขวา รองรับ PDF, PNG, JPG และ WEBP
+2. เลือกหน้าที่ต้องการเทียบ ระบบเลือกทุกหน้าไว้ก่อนเสมอ สามารถคลิก thumbnail, กด Shift-click เพื่อเลือกช่วง หรือพิมพ์ช่วง เช่น `1,5-8`
+3. หากต้องการเทียบเพียงบางบริเวณ ให้กำหนดพื้นที่เปรียบเทียบของแต่ละหน้าได้ ฝั่งซ้ายและขวามีตัวเลือกหน้า, ปุ่ม `< >` และกรอบครอป 8 จุดจับของตัวเอง ปุ่มคัดลอกจะคัดลอกกรอบไปยังหน้าที่เลือกของเอกสารฝั่งเดียวกันเท่านั้น บนอุปกรณ์ touch ระบบจะเริ่มในโหมดเลื่อนหน้า ให้กดปุ่ม Crop ของฝั่งที่ต้องการก่อนแก้ไข จุดสัมผัสของ handle จะใหญ่กว่าขนาดที่มองเห็น และปุ่มรีเซ็ตที่อยู่ติดกันจะ disabled จนกว่าจะมีการ crop จริง
+4. เลือก **สแกนเฉพาะสาระสำคัญ** หรือ **สแกนทั้งหมด** จากตัวเลือกขนาดกะทัดรัดบน header ของ Document Compare โหมดเฉพาะสาระสำคัญมี prompt ภาษาไทยที่แก้ได้และข้อความผู้ใช้จะเป็นนโยบายขอบเขตหลัก ส่วนโหมดทั้งหมดจะล็อกนโยบายตรวจครบไว้ ช่องเดียวกันจะเปลี่ยนเป็นบริบทเอกสารที่ไม่บังคับ ใช้อธิบายประเภทเอกสาร การจับคู่ field คำศัพท์ หน่วย หรือรูปแบบที่มีความหมายเท่ากันเท่านั้น prompt ของ focused และบริบทของ exhaustive ถูกเก็บแยกกันและไม่เขียนทับกัน
+5. กดปุ่ม **Gemini** ที่มุมขวาบน แล้วกรอก API key ในหน้าต่างตั้งค่าและกดบันทึก ระบบจะซ่อนค่าและเก็บไว้ใน `localStorage` ของ browser นั้น ไม่เขียนลง repository และไม่ส่งเข้า server ของแอป
+6. อ่านรายการความต่างและ preview ที่วงสีแดง จากนั้นกด **ดาวน์โหลด** เพื่อดาวน์โหลด PDF รวมของหน้าในฉบับเปรียบเทียบ/ฝั่งขวาตามลำดับคู่หน้าที่เลือก
+7. ใช้ bottom dock ด้านล่างของพื้นที่ Document Compare เพื่อแก้ Prompt, เริ่มเปรียบเทียบ และดาวน์โหลดผลลัพธ์ได้ตลอดระหว่างการเลื่อนเอกสาร ตัว dock จำกัดความกว้างบน desktop และใช้พื้นที่เต็มจอบนหน้าจอแคบ โดยวางซ้อนอยู่ใน workspace เดียวกับเอกสารจึงยังเห็นเนื้อหาด้านหลังบริเวณข้าง dock
 
-## How Document Compare Works
+ขณะกำลังประมวลผล พื้นที่หัวของ Prompt จะเปลี่ยนเป็น progress ของคู่หน้าปัจจุบัน และปุ่มคืนค่า Prompt จะเปลี่ยนเป็นปุ่ม X สำหรับยกเลิก การกดลูกศรของ Prompt จะขยายหรือย่อกล่องเดิมแบบ inline ไม่เปิดหน้าต่างใหม่ และการกดดาวน์โหลดจะแสดง progress แยกจาก progress การเปรียบเทียบ
+
+## Document Compare ทำงานอย่างไร
 
 ```mermaid
 flowchart LR
-  A["Left reference file"] --> C["PDF.js render and text extraction"]
-  B["Right revised file"] --> C
-  C --> D{"Reliable PDF text?"}
-  D -->|"Yes"| E["Full PDF text evidence with coordinates"]
-  D -->|"No"| F["Rendered page image evidence"]
-  E --> G["Gemini semantic review"]
+  A["ไฟล์ต้นฉบับฝั่งซ้าย"] --> C["PDF.js render และดึง text layer"]
+  B["ไฟล์ฉบับเปรียบเทียบฝั่งขวา"] --> C
+  C --> D{"ข้อความ PDF เชื่อถือได้หรือไม่"}
+  D -->|"ได้"| E["หลักฐานข้อความ PDF พร้อมพิกัด"]
+  D -->|"ไม่ได้"| F["หลักฐานภาพจากหน้าที่ render"]
+  E --> G["Gemini ตรวจความต่างเชิงความหมาย"]
   F --> G
-  G --> H["Ground markers to PDF text when possible"]
-  H --> I["Red circles and callouts"]
-  I --> J["Annotated PDF export"]
+  G --> H["ยึดพิกัดจาก PDF text เมื่อทำได้"]
+  H --> I["วงแดงและคำอธิบาย"]
+  I --> J["ส่งออก PDF ที่มีคำอธิบาย"]
 ```
 
-### 1. Open and render input files
+### 1. เปิดและ render ไฟล์
 
-`src/documentCompare.js` uses PDF.js locally in the browser. PDF files are not uploaded to a Python scanner for Document Compare.
+`src/documentCompare.js` ใช้ PDF.js ในเบราว์เซอร์โดยตรง ไฟล์ PDF ของ Document Compare จะไม่ถูกส่งไปที่ Python scanner
 
-- PDF pages are rendered to canvases for previews and image fallback.
-- For a PDF, PDF.js also exposes a text layer with each text fragment's coordinates.
-- Images are treated as one-page documents and do not have an extractable PDF text layer.
+- หน้า PDF ถูก render เป็น canvas เพื่อใช้ preview และใช้เทียบภาพเมื่อจำเป็น
+- สำหรับ PDF, PDF.js จะเปิดเผย text layer พร้อมพิกัดของข้อความแต่ละส่วน
+- ไฟล์รูปภาพถูกมองเป็นเอกสารหนึ่งหน้า และไม่มี PDF text layer ให้ดึง
 
-### 2. Page pairing
+### 2. การจับคู่หน้า
 
-The tool pairs only the pages the user selected:
+ระบบจะจับคู่เฉพาะหน้าที่ผู้ใช้เลือก:
 
-- If the same number of pages is selected on both sides, it pairs them in order.
-- If one side has one selected page, that page is compared with every selected page on the other side.
-- Otherwise, the shorter selection is distributed in document order across the longer selection. This makes every selected page participate instead of silently dropping pages.
+- ถ้าเลือกจำนวนหน้าเท่ากันทั้งสองฝั่ง จะจับคู่ตามลำดับ
+- ถ้าฝั่งหนึ่งเลือกเพียงหน้าเดียว หน้านั้นจะถูกเทียบกับทุกหน้าที่เลือกของอีกฝั่ง
+- กรณีอื่น ระบบจะกระจายหน้าจากรายการที่สั้นกว่าไปตามลำดับของรายการที่ยาวกว่า เพื่อให้ทุกหน้าที่เลือกถูกนำไปใช้ ไม่ใช่ถูกทิ้งเงียบ ๆ
 
-### 3. Comparison area (crop)
+### 3. พื้นที่เปรียบเทียบ (crop)
 
-The crop region is stored separately by side and page. A crop on `ต้นฉบับ หน้า 2` never changes the crop on `ฉบับเปรียบเทียบ หน้า 2` or another page.
+กรอบครอปถูกเก็บแยกตามฝั่งและเลขหน้า ดังนั้นกรอบของ `ต้นฉบับ หน้า 2` จะไม่เปลี่ยนกรอบของ `ฉบับเปรียบเทียบ หน้า 2` หรือหน้าอื่น
 
-- Click or tap the Crop button for that document first. Crop editing is explicit on both desktop and touch devices, so clicking the preview while the button is inactive cannot create a new crop.
-- Drag an empty area to create a crop.
-- Drag inside an existing crop to move it.
-- Use all eight handles: four corners and four edge midpoints.
-- On touch devices, scroll normally without starting a crop. Tap the Crop button to enter edit mode, then tap the same button again to finish.
-- The reset button next to Crop returns the active page to the full-page region and is disabled when no custom crop exists.
-- The dashed full-page region means no custom crop is applied.
+- กดปุ่ม Crop ของเอกสารฝั่งนั้นก่อนจึงจะแก้ไขได้ ทั้ง desktop และ touch ใช้กติกาเดียวกัน การคลิกบน preview ขณะที่ปุ่มยังไม่ active จะไม่สร้างกรอบใหม่
+- ลากบนพื้นที่ว่างเพื่อสร้างกรอบครอป
+- ลากภายในกรอบที่มีอยู่เพื่อย้ายกรอบ
+- ปรับได้จากจุดจับ 8 ทิศ: มุม 4 จุด และกึ่งกลางขอบ 4 จุด
+- บน touch ให้เลื่อนหน้าได้ตามปกติโดยไม่สร้างกรอบโดยไม่ตั้งใจ กดปุ่ม Crop เพื่อเข้าโหมดแก้ไข และกดปุ่มเดิมอีกครั้งเพื่อจบโหมดแก้ไข
+- ปุ่มรีเซ็ตที่อยู่ติดกับ Crop จะคืนหน้าปัจจุบันกลับไปใช้ทั้งหน้า และจะ disabled เมื่อยังไม่มี crop เฉพาะหน้า
+- กรอบเส้นประเต็มหน้าหมายถึงยังไม่ได้กำหนด crop เฉพาะหน้า
 
-The crop is used for comparison only. It does not alter the source document or the final PDF page size.
+Crop ใช้เฉพาะตอนเปรียบเทียบ ไม่แก้ไขไฟล์ต้นฉบับและไม่เปลี่ยนขนาดหน้าของ PDF ที่ export
 
-### 4. Text-first comparison
+### 4. หลักฐานจาก text layer
 
-For PDFs with a reliable text layer, `src/pdfTextDiff.js` extracts the complete readable text in the selected area and sends it to Gemini with normalized coordinates. It is evidence, not a precomputed answer.
+สำหรับ PDF ที่มี text layer เชื่อถือได้ `src/pdfTextDiff.js` จะดึงข้อความที่อ่านได้ทั้งหมดในพื้นที่ที่เลือกพร้อมพิกัด normalized แล้วส่งให้ Gemini เป็นหลักฐาน ไม่ใช่คำตอบที่คำนวณไว้ล่วงหน้า
 
-The code:
+โค้ดจะ:
 
-- keeps only readable text fragments and rejects obvious mojibake so broken Thai encoding does not become authoritative;
-- groups fragments into readable lines with stable normalized coordinates;
-- sends both sides' complete text evidence to Gemini without sending a locally guessed difference list; and
-- can locate Gemini's confirmed comparison text back on the revised/right-hand PDF for accurate circles.
+- เก็บเฉพาะ fragment ที่อ่านได้และตัด mojibake ที่เห็นชัด เพื่อไม่ให้ encoding ภาษาไทยที่เสียกลายเป็นข้อมูลหลัก
+- รวม fragment เป็นบรรทัดพร้อมพิกัด normalized ที่คงที่
+- ส่งหลักฐานข้อความครบทั้งสองฝั่งให้ Gemini โดยไม่ส่งรายการความต่างที่ local detector เดาไว้
+- ค้นหาข้อความที่ Gemini ยืนยันแล้วกลับไปยัง text layer ของ PDF ฝั่งขวาเพื่อวางวงให้แม่นยำ
 
-This is why text PDFs should be compared through their text layer instead of trying to infer individual characters from pixels.
+นี่คือเหตุผลที่ PDF ที่ extract text ได้ควรถูกเทียบผ่าน text layer ไม่ใช่เดาตัวอักษรแต่ละตัวจากภาพ
 
 ### 5. Image fallback
 
-When reliable PDF text is not available, the app still sends rendered page images to Gemini. The image is the primary evidence for scanned PDFs and image files.
+หาก PDF ไม่มีข้อความที่เชื่อถือได้ ระบบจะส่งภาพหน้าที่ render ให้ Gemini โดยใช้ภาพเป็นหลักฐานหลักสำหรับ PDF ที่สแกนมาและไฟล์รูปภาพ
 
-Gemini is instructed to ignore layout, scan skew, compression artifacts, and broad visual structure unless those visual elements are business content. The result remains semantic rather than a raw pixel-difference list.
+Gemini จะถูกกำชับให้ละเว้น layout ความเอียงของการสแกน compression artifact และโครงสร้างภาพที่ไม่ใช่สาระ เว้นแต่สิ่งนั้นจะเป็นเนื้อหาทางธุรกิจจริง ผลลัพธ์จึงเป็นการตัดสินเชิงความหมาย ไม่ใช่รายการ pixel diff ดิบ
 
 ### 6. Gemini scan
 
-Gemini is the primary semantic detector. It is intended for comparison when two documents have different layouts but represent the same business content, for example a quotation versus a purchase order.
+Gemini เป็นตัวตรวจจับเชิงความหมายหลัก ใช้สำหรับเทียบความหมายของเนื้อหาเมื่อเอกสารสองฉบับใช้ template หรือ layout คนละแบบ แต่สื่อถึงงานเดียวกัน เช่น quotation เทียบกับ purchase order
 
-`src/gemini.js` sends the selected reference and revised areas to `gemini-3.1-flash-lite` together with complete extracted text evidence when available. In `focused` mode, the user-editable Thai prompt is the primary policy for what to inspect, include, ignore, and treat as material. In `exhaustive` mode, the application always sends the locked all-differences policy; optional user text is placed in a separate `USER DOCUMENT CONTEXT` block and may help match meaning but cannot narrow the scan or suppress evidence-backed changes. When a crop exists, both the image and text evidence are restricted to that crop, the prompt explicitly marks it as the hard scan boundary, and final marker boxes are clipped to it. Fixed instructions still enforce evidence-only answers, document prompt-injection isolation, valid JSON, and grounded coordinates. Gemini returns a clean Thai summary and grouped changes containing reference/revised values.
+`src/gemini.js` ส่งพื้นที่ที่เลือกของต้นฉบับและฉบับเปรียบเทียบไปที่ `gemini-3.1-flash-lite` พร้อมหลักฐานข้อความที่ extract ได้ทั้งหมด ในโหมด `focused` prompt ภาษาไทยที่ผู้ใช้แก้เป็นนโยบายหลักสำหรับสิ่งที่จะตรวจ รายงาน ละเว้น และถือว่าสำคัญ ส่วนโหมด `exhaustive` จะส่งนโยบายทุกความต่างที่แอปล็อกไว้เสมอ ข้อความเสริมจากผู้ใช้จะอยู่ในบล็อก `USER DOCUMENT CONTEXT` แยกต่างหาก ใช้ช่วยจับคู่ความหมายได้แต่ลดขอบเขตหรือสั่งไม่ให้รายงานความต่างที่มีหลักฐานไม่ได้ หากมี crop ทั้งภาพและ text evidence จะถูกจำกัดอยู่ใน crop นั้น prompt จะระบุ crop เป็นขอบเขตบังคับ และระบบจะตัดกล่องผลลัพธ์ให้อยู่ในพื้นที่ crop เสมอ Fixed instruction ยังคงบังคับให้ตอบจากหลักฐาน แยกคำสั่งในเอกสารออกจากคำสั่งผู้ใช้ ส่ง JSON ที่ถูกต้อง และระบุตำแหน่งที่อ้างอิงได้
 
-The normal path makes **one Gemini request per page pair**. Images, PDF text evidence, and bounded text candidates are assembled once, and the same request performs matching, materiality review, deduplication, and final self-review. The request runs in `src/geminiWorker.js`, so the browser UI can be left in another tab while the current comparison continues. A second request is made only as a malformed-JSON recovery retry. Gemini and network latency can still vary; closing or reloading the page still cancels a browser-owned job.
+เส้นทางปกติเรียก Gemini **หนึ่งคำขอต่อหนึ่งคู่หน้า** ภาพ หลักฐานข้อความจาก PDF และ bounded text candidates จะถูกประกอบและส่งเพียงครั้งเดียว โดยให้คำขอเดียวกันทำทั้งการจับคู่ ตรวจสาระสำคัญ รวมรายการซ้ำ และทบทวนคำตอบขั้นสุดท้าย คำขอจะทำงานใน `src/geminiWorker.js` ซึ่งช่วยให้ผู้ใช้สลับไปแท็บอื่นได้ระหว่างรอผล ระบบจะเรียกครั้งที่สองเฉพาะกรณี JSON ที่ตอบกลับมาเสียรูปและต้องกู้คืนเท่านั้น ระยะเวลาของ Gemini และเครือข่ายยังแปรผันได้ แต่ถ้าปิดหรือ reload หน้าเว็บ งานที่ผูกกับ browser นั้นจะถูกยกเลิก
 
-Gemini decides **what changed**. Marker placement uses the most reliable location available:
+เพราะระบบส่งทีละคู่หน้า จึงไม่มีการส่ง PDF ทั้งไฟล์ไป Gemini ใน request เดียว และจำนวนคู่หน้าที่สแกนได้จริงขึ้นกับโควตา API ของ Google, เวลาในการประมวลผล, ขนาด payload ของภาพ และหน่วยความจำของ browser มากกว่าจำนวนหน้าตามทฤษฎีของโมเดล หากเอกสารมีหลายร้อยหน้า ควรแบ่งช่วงหน้าและตรวจผลเป็นช่วง ๆ เพื่อให้ติดตามหรือเริ่มต่อได้ง่าย
 
-1. If the PDF text layer contains a matching reference/revised change, the app grounds the Gemini finding to that exact right-hand PDF text box.
-2. If the matching text cannot be found, such as a scanned image or a non-extractable field, it falls back to Gemini's estimated image box.
+Gemini เป็นผู้ตัดสินว่า **อะไรต่างกัน** แต่การวางวงแดงจะใช้ตำแหน่งที่น่าเชื่อถือที่สุดตามลำดับนี้:
 
-This hybrid approach keeps Gemini's broader semantic coverage without letting approximate image coordinates shift circles away from the real text. The implementation is in `groundGeminiBoxesToPdfText(...)` in `src/documentCompare.js`.
+1. ถ้า text layer ของ PDF พบความต่างที่ตรงกับค่า reference/revised ของ Gemini ระบบจะยึดกล่องข้อความจริงใน PDF ฝั่งขวา
+2. ถ้าหาข้อความที่ตรงกันไม่ได้ เช่น เป็นภาพสแกนหรือเป็นฟิลด์ที่ extract ไม่ได้ ระบบจึง fallback ไปใช้กล่องจากภาพที่ Gemini ประเมิน
 
-### 7. Red circles, descriptions, and PDF export
+วิธีผสมนี้ทำให้ได้ความครอบคลุมเชิงความหมายจาก Gemini โดยไม่ปล่อยให้พิกัดจากภาพที่คลาดเคลื่อนเลื่อนวงแดงออกจากข้อความจริง การทำงานอยู่ใน `groundGeminiBoxesToPdfText(...)` ภายใน `src/documentCompare.js`
 
-Each confirmed finding is drawn as a red ellipse with a numbered badge. The corresponding explanation is placed back on the PDF page with a leader line.
+### 7. ผลลัพธ์และ preview เต็มจอ
 
-Callout placement is deliberate, not random. The renderer samples ink density from the page image, avoids red-marker areas, avoids previously placed callouts, and scores candidate positions around the finding and across the page. It therefore prefers open/white areas. It is still a visual heuristic: on a dense page with no empty area large enough for a card, it chooses the least crowded valid position.
+ผลลัพธ์จะแสดงทุกคู่หน้าที่ผู้ใช้เลือก ไม่ว่าจะพบหรือไม่พบความต่าง ตารางจะบอกจำนวนจุดต่างและเปิดให้เลือกคู่หน้าเพื่อดูภาพที่มี annotation
 
-The export process uses `pdf-lib`:
+- ปุ่มดูเต็มจอจะซ่อน bottom dock ชั่วคราว เพื่อให้เห็นเอกสารและแถบควบคุมได้ชัดเจน
+- ที่ระดับ `100%` ระบบจะ fit ให้เห็นเอกสารทั้งแผ่นในแกนกว้างและสูง ไม่ใช่ขยายให้เต็มเฉพาะความยาวด้านใดด้านหนึ่ง
+- ผู้ใช้สามารถซูมออก ซูมกลับค่าเริ่มต้น และซูมเข้าได้ รวมถึงเลื่อนดูเอกสารเมื่อซูมเกินขนาดที่พอดีหน้าจอ
+- แถบควบคุม fullscreen มีปุ่มออกจากเต็มจอทั้งบน desktop และ mobile
 
-- it copies the original revised/right-hand PDF pages at their original dimensions;
-- it draws a transparent PNG annotation layer on top;
-- it preserves the underlying document content for later editing; and
-- it exports one combined `document-comparison.pdf` for all compared page pairs.
+### 8. วงแดง, คำอธิบาย และ PDF export
 
-## Priority Count: Present in the Repository, Paused in the Web UI
+ทุก finding ที่ยืนยันแล้วจะถูกวาดเป็นวงรีสีแดงพร้อม badge หมายเลข คำอธิบายของหมายเลขนั้นถูกวางกลับลงบนหน้า PDF พร้อมเส้น leader line
 
-Priority Count was built to rank PDF pages by the number of colored priority markers. It is **not deleted**. It is intentionally paused because it needs a long-running Python/OpenCV service and is not part of the current Vercel-only Document Compare release.
+การวางคำอธิบายไม่ใช่การสุ่ม ตัว renderer จะสุ่มตัวอย่างความหนาแน่นของหมึกจากภาพหน้าเอกสาร หลีกพื้นที่วงแดง หลีกกล่องคำอธิบายที่วางแล้ว และให้คะแนนตำแหน่งที่เป็นไปได้รอบ finding และทั่วหน้า จึงพยายามเลือกพื้นที่ขาว/โล่งก่อน อย่างไรก็ตาม นี่ยังเป็น heuristic จากภาพ: ถ้าหน้าแน่นจนไม่มีที่ว่างขนาดพอสำหรับกล่อง ระบบจะเลือกตำแหน่งที่แออัดน้อยที่สุดที่ยังวางได้
 
-### What the priority system does
+ขั้นตอน export ใช้ `pdf-lib`:
 
-1. `server_scanner.py` receives a PDF and creates a background job.
-2. `scripts/apply_red_box_calibration.py` renders pages with `pypdfium2` and asks `scripts/detector_features.py` to calculate OpenCV detector features.
-3. The detector measures color-mask, connected-component, marker-area, and related page features for the requested color.
-4. `model/detector_count_estimator.joblib` predicts a count from detector features. The current supported colors are red, green, blue, pink, and orange marker.
-5. The service sorts pages by predicted count and produces a sorted PDF plus CSV.
+- คัดลอกหน้า PDF ต้นฉบับของฉบับเปรียบเทียบ/ฝั่งขวาด้วยขนาดเดิม
+- วาง transparent PNG annotation layer ทับด้านบน
+- คงเนื้อหาเอกสารเดิมไว้เพื่อให้แก้ไขต่อใน PDF editor ได้
+- ส่งออก `document-comparison.pdf` ไฟล์เดียวสำหรับทุกคู่หน้าที่เทียบ
 
-### Source truth and calibration
+## Priority Count: มีอยู่ใน Repository แต่พักไว้จากหน้าเว็บ
 
-`countedvalues.txt` is the human-counted source-truth dataset used during calibration. It covers the historical page range `1019-1115` (97 pages). It is training/evaluation data, not a page-number answer lookup.
+Priority Count ถูกสร้างมาเพื่อจัดอันดับหน้า PDF ตามจำนวน marker สีของ priority ระบบนี้ **ไม่ได้ถูกลบ** แต่ตั้งใจพักไว้ เพราะต้องใช้ Python/OpenCV service ที่ทำงานนาน และไม่ใช่ส่วนของ Document Compare ที่ deploy บน Vercel อย่างเดียวในตอนนี้
 
-The production scan path uses detector features and the tree-ensemble estimator in `model/detector_count_estimator.joblib`. The scanner code explicitly documents that it does not use page IDs, page-to-answer lookup, or an exact-coefficient fallback. `model/red_box_calibration_model.json` stores detector/calibration metadata used by the pipeline.
+### ระบบ Priority Count ทำอะไรบ้าง
 
-Useful training and evaluation scripts:
+1. `server_scanner.py` รับ PDF และสร้าง background job
+2. `scripts/apply_red_box_calibration.py` render หน้าเอกสารด้วย `pypdfium2` แล้วเรียก `scripts/detector_features.py` เพื่อคำนวณ OpenCV detector features
+3. detector วัด color mask, connected component, marker area และ feature อื่นของหน้าตามสีที่เลือก
+4. `model/detector_count_estimator.joblib` ทำนายจำนวนจาก detector features ปัจจุบันรองรับ red, green, blue, pink และ orange marker
+5. service เรียงหน้าตามจำนวนที่ทำนาย แล้วสร้าง PDF ที่เรียงแล้วกับ CSV
 
-| Script | Purpose |
+### Source truth และ calibration
+
+`countedvalues.txt` คือชุดข้อมูล source truth ที่มนุษย์นับไว้ ใช้สำหรับ calibration โดยครอบคลุมช่วงหน้าในอดีต `1019-1115` รวม 97 หน้า ข้อมูลนี้เป็น training/evaluation data ไม่ใช่การ lookup คำตอบจากเลขหน้า
+
+เส้นทางสแกน production ใช้ detector features และ tree-ensemble estimator ใน `model/detector_count_estimator.joblib` โค้ด scanner ระบุชัดว่าไม่ใช้ page ID, page-to-answer lookup หรือ exact-coefficient fallback ไฟล์ `model/red_box_calibration_model.json` เก็บ metadata ของ detector/calibration ที่ pipeline ใช้
+
+script ที่สำคัญสำหรับ training และประเมินผล:
+
+| Script | หน้าที่ |
 | --- | --- |
-| `scripts/create_text_anchored_source_truth.py` | Builds source-truth data with text anchors. |
-| `scripts/train_detector_count_estimator.py` | Trains the detector-feature count estimator. |
-| `scripts/evaluate_counts_against_truth.py` | Compares predictions with the human counts. |
-| `scripts/evaluate_detector_robustness.py` | Checks detector behavior against broader inputs. |
-| `scripts/tune_detector_generalization.py` | Tunes generalization without page-answer lookup. |
+| `scripts/create_text_anchored_source_truth.py` | สร้าง source truth ที่มี text anchor |
+| `scripts/train_detector_count_estimator.py` | train detector-feature count estimator |
+| `scripts/evaluate_counts_against_truth.py` | เปรียบเทียบ prediction กับจำนวนที่มนุษย์นับ |
+| `scripts/evaluate_detector_robustness.py` | ตรวจพฤติกรรมของ detector กับ input ที่กว้างขึ้น |
+| `scripts/tune_detector_generalization.py` | ปรับ generalization โดยไม่ใช้ page-answer lookup |
 
-Do not casually overwrite the files in `model/`. Train and evaluate first, then record the outcome before replacing a model artifact.
+อย่าเขียนทับไฟล์ใน `model/` โดยไม่ตั้งใจ ควร train และประเมินผลก่อน จากนั้นบันทึกผลก่อนแทนที่ model artifact
 
-### Why Priority Count cannot run on Vercel as-is
+### เหตุผลที่ Priority Count ไม่ควรรันบน Vercel ในรูปแบบปัจจุบัน
 
-The Priority Count path needs Python, OpenCV, `pypdfium2`, model files, PDF rendering, job polling, and more CPU/RAM than a small Vercel function is intended to provide. It should remain a separate Python service.
+เส้นทาง Priority Count ต้องใช้ Python, OpenCV, `pypdfium2`, model files, การ render PDF, job polling และ CPU/RAM มากกว่า Vercel function ขนาดเล็กที่เหมาะสม จึงควรคงไว้เป็น Python service แยกต่างหาก
 
-`render.yaml` is a starter Render configuration for that service. The API exposes:
+`render.yaml` เป็น template เริ่มต้นสำหรับ deploy service นี้บน Render โดย API มี endpoint:
 
 - `POST /api/pdf-info`
 - `POST /api/scan-job`
@@ -162,55 +176,55 @@ The Priority Count path needs Python, OpenCV, `pypdfium2`, model files, PDF rend
 - `GET /api/download/{job_id}/{file_name}`
 - `GET /api/health`
 
-To enable Priority Count in the future:
+หากต้องการเปิด Priority Count อีกครั้งในอนาคต:
 
-1. Deploy `server_scanner.py` with `requirements.txt` to Render or another Python-capable host.
-2. Set `VITE_SCANNER_API_URL` to that service URL at frontend build time.
-3. Reintroduce `createPriorityScanner(...)` from `src/priorityScan.js` in `src/main.js` and add a deliberate UI entry point.
-4. Test both the API job flow and progress polling before exposing it to users.
+1. Deploy `server_scanner.py` พร้อม `requirements.txt` บน Render หรือ host ที่รัน Python ได้
+2. ตั้ง `VITE_SCANNER_API_URL` เป็น URL ของ service ตอน build frontend
+3. นำ `createPriorityScanner(...)` จาก `src/priorityScan.js` กลับมา import ใน `src/main.js` และเพิ่ม UI entry point อย่างตั้งใจ
+4. ทดสอบทั้ง API job flow และ progress polling ก่อนเปิดให้ผู้ใช้ใช้งาน
 
-## Repository Map
+## แผนผัง Repository
 
 ```text
 model/
   detector_count_estimator.joblib
   red_box_calibration_model.json
-scripts/                      Priority Count calibration and evaluation tools
+scripts/                      เครื่องมือ calibration/evaluation ของ Priority Count
 src/
-  main.js                     Current app entry point; Document Compare only
+  main.js                     จุดเริ่มแอปปัจจุบัน; Document Compare เท่านั้น
   documentCompare.js          UI, PDF rendering, comparison, annotations, export
-  pdfTextDiff.js              Text-layer extraction, reliability checks, text diff
-  gemini.js                   Browser-side Gemini request and response parsing
-  geminiWorker.js             Background Gemini request worker
-  priorityScan.js             Paused Priority Count frontend
-  styles.css                  Shared UI styles
-server_scanner.py             Paused Priority Count FastAPI service
-render.yaml                   Render deployment template for the Python service
-vercel.json                   Vite build and output settings
+  pdfTextDiff.js              text-layer extraction, reliability checks, text diff
+  gemini.js                   Gemini request/response parsing ฝั่งเบราว์เซอร์
+  geminiWorker.js             worker สำหรับเรียก Gemini เบื้องหลัง
+  priorityScan.js             frontend ของ Priority Count ที่พักไว้
+  styles.css                  shared UI styles
+server_scanner.py             FastAPI service ของ Priority Count ที่พักไว้
+render.yaml                   template deploy Python service บน Render
+vercel.json                   การตั้งค่า Vite build และ output
 ```
 
-## Run Locally
+## การรันในเครื่อง
 
-### Document Compare only
+### Document Compare อย่างเดียว
 
-This is the normal local workflow. It needs Node.js only.
+นี่คือ workflow ปกติในปัจจุบัน ใช้ Node.js อย่างเดียว
 
 ```powershell
 npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+เปิด `http://127.0.0.1:5173`
 
-Build the production bundle before committing or deploying:
+ก่อน commit หรือ deploy ควร build production bundle:
 
 ```powershell
 npm run build
 ```
 
-### Optional local Priority Count service
+### Priority Count service ในเครื่อง (ทางเลือก)
 
-Only do this when working on the paused Python scanner.
+ทำเฉพาะเมื่อพัฒนาส่วน Python scanner ที่พักไว้
 
 ```powershell
 py -m venv .venv
@@ -219,54 +233,54 @@ pip install -r requirements.txt
 uvicorn server_scanner:app --host 127.0.0.1 --port 8000
 ```
 
-In a second terminal, set the Vite variable before starting the frontend:
+เปิด terminal ที่สอง แล้วตั้ง Vite variable ก่อนเริ่ม frontend:
 
 ```powershell
 $env:VITE_SCANNER_API_URL = "http://127.0.0.1:8000"
 npm run dev
 ```
 
-## Vercel Deployment
+## การ Deploy ด้วย Vercel
 
-### What Vercel hosts
+### Vercel host อะไรบ้าง
 
-Vercel hosts:
+Vercel host:
 
-- the static Vite frontend in `dist/`.
+- Vite frontend แบบ static ใน `dist/`
 
-Vercel does **not** host the OpenCV/Python Priority Count service in the current design.
+Vercel **ไม่ได้** host OpenCV/Python Priority Count service ใน design ปัจจุบัน
 
-`vercel.json` sets `npm run build` and publishes `dist`. The browser calls Google's Gemini API directly after the user enters a key.
+`vercel.json` ตั้งค่า `npm run build` และ publish `dist` เบราว์เซอร์จะเรียก Google Gemini โดยตรงหลังผู้ใช้กรอก key
 
-### Connect GitHub to Vercel
+### เชื่อม GitHub กับ Vercel
 
-1. In Vercel, choose **Add New -> Project**.
-2. Import the GitHub repository `Conthium/le-pdfscan`.
-3. Use the repository root as the project root. Vercel detects Vite from `package.json` and `vercel.json`.
-4. Deploy. Future pushes to the connected branch create deployments automatically.
+1. ใน Vercel เลือก **Add New -> Project**
+2. Import GitHub repository `Conthium/le-pdfscan`
+3. ใช้ repository root เป็น project root โดย Vercel จะตรวจพบ Vite จาก `package.json` และ `vercel.json`
+4. Deploy จากนั้นทุก push ไปยัง branch ที่เชื่อมไว้จะสร้าง deployment ใหม่โดยอัตโนมัติ
 
-The project can also be deployed manually from this folder:
+สามารถ deploy จากโฟลเดอร์นี้ด้วย Vercel CLI ได้เช่นกัน:
 
 ```powershell
 vercel link
 vercel --prod
 ```
 
-### Gemini key handling
+### การจัดการ Gemini key
 
-The user clicks the **Gemini** button in the top-right header and enters an API key in the settings dialog. The value is masked and stored only in that browser's `localStorage`, so it survives reloads for that user. It is sent directly to Google's API and is not included in the build, repository, Vercel environment, or application logs.
+ผู้ใช้กดปุ่ม **Gemini** ที่มุมขวาบน แล้วกรอก Gemini API key ในหน้าต่างตั้งค่า ระบบซ่อนค่าและเก็บไว้เฉพาะใน `localStorage` ของ browser นั้น จึงยังอยู่หลัง reload ได้ ค่า key ไม่อยู่ใน build, repository, Vercel environment หรือ log ของแอป และถูกส่งตรงไปยัง Google API
 
-Because this is a browser-side key, use a restricted key with API and referrer limits. A key pasted into chat, source code, screenshots, or a public deployment should be revoked and replaced.
+เพราะเป็น key ฝั่ง browser ควรสร้าง key ที่จำกัด API และจำกัด referrer หาก key ถูกนำไปวางใน chat, source code, screenshot หรือ deployment สาธารณะ ให้ revoke แล้วสร้างใหม่
 
-## Public Repository Checklist
+## Checklist ก่อนเปิด Repository เป็น Public
 
-Before changing GitHub visibility to public, verify:
+ก่อนเปลี่ยน visibility ของ GitHub เป็น public ให้ตรวจ:
 
-- no API key, `.env`, customer PDF, exported PDF, CSV, or debug file is committed;
-- the repo does not contain proprietary client documents;
-- no Gemini API key exists in source, `.env`, build output, or Git history.
+- ไม่มี API key, `.env`, PDF ลูกค้า, PDF ที่ export แล้ว, CSV หรือ debug file ถูก commit
+- repository ไม่มีเอกสารลูกค้าหรือข้อมูลลับของบริษัท
+- ไม่มี Gemini API key อยู่ใน source, `.env`, build output หรือ Git history
 
-Useful checks:
+คำสั่งที่ช่วยตรวจ:
 
 ```powershell
 git status --short
@@ -275,10 +289,10 @@ vercel env ls
 npm run build
 ```
 
-## Handoff Checklist
+## Checklist สำหรับผู้รับช่วง
 
-1. Start with Document Compare. It is the only supported feature in the current UI.
-2. Preserve the text-first rule: use PDF text when it is reliable; reserve pixel comparison for scans or bad text extraction.
-3. Keep Gemini semantic findings and PDF-text marker grounding together. Do not revert to drawing raw Gemini boxes for text PDFs.
-4. Treat Priority Count as a separate service project. Do not add its Python/OpenCV runtime back into Vercel.
-5. Before every release, run `npm run build`, test a PDF pair locally, then test the deployed URL.
+1. เริ่มจาก Document Compare เพราะเป็นฟีเจอร์เดียวที่รองรับใน UI ปัจจุบัน
+2. รักษากฎ text-first: ใช้ PDF text เมื่อเชื่อถือได้ และใช้ pixel comparison เฉพาะไฟล์สแกนหรือ text extraction ที่เสีย
+3. รักษาการทำงานร่วมกันของ Gemini semantic findings กับ PDF-text marker grounding อย่าย้อนกลับไปวาด raw Gemini box สำหรับ PDF ที่ extract text ได้
+4. มอง Priority Count เป็นโปรเจกต์ service แยก ห้ามย้าย Python/OpenCV runtime กลับไป Vercel
+5. ก่อนปล่อยทุกครั้ง ให้รัน `npm run build`, ทดสอบ PDF หนึ่งคู่ในเครื่อง และทดสอบ URL ที่ deploy แล้ว
